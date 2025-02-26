@@ -12,6 +12,7 @@ import re
 import time
 
 # Third party imports
+from datasets import load_dataset
 import pandas as pd  # type: ignore
 from pydantic import BaseModel, RootModel  # type: ignore
 from sentence_transformers import SentenceTransformer  # type: ignore
@@ -23,7 +24,7 @@ from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 
 # Local imports
-from embed import StellaEmbedder
+# from embed import StellaEmbedder
 import prompts
 
 # Configure logging
@@ -41,7 +42,7 @@ class LineClassifier:
     def __init__(self, args):
         self.run_id = args.run_id
         self.cache_dir = args.cache_dir
-        self.model = args.model
+        self.model_name = args.model_name
         self.temperature = args.temperature
         self.max_vocab = args.max_vocab
         self.synonym_threshold = args.synonym_threshold
@@ -53,8 +54,8 @@ class LineClassifier:
         self.result_dir = args.result_dir
 
     def model_setup(self):
-        return LLM(
-            model=self.model,
+        self.model = LLM(
+            model=self.model_name,
             download_dir=self.cache_dir,
             dtype="bfloat16",
             max_model_len=128_000,
@@ -190,9 +191,7 @@ class LineClassifier:
         return GuidedDecodingParams(json=json_schema)
 
     def load_data(self):
-        return load_documents(
-            "HuggingFaceFW/fineweb", name="sample-10BT", split="train"
-        )
+        return load_dataset("HuggingFaceFW/fineweb", name="sample-10BT", split="train")
 
     def load_previous_labels(self):
         junk_labels = Counter()
@@ -298,14 +297,14 @@ class LineClassifier:
             doc["general"] = no_dups
 
     def process_data(self):
+        self.model_setup()
         data = self.load_data()
-        model = self.model_setup()
         if self.use_previous_labels:
             vocab = self.load_previous_labels("junk_labels.tsv")
         else:
             vocab = Counter()
 
-        for idx, doc in enumerate(data):
+        for idx, doc in enumerate(data["text"]):
             if idx < self.start_index:
                 continue
             start_time = time.time()
