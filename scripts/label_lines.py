@@ -49,9 +49,8 @@ class LineClassifier:
         self.start_index = args.start_index
         self.stop_index = args.stop_index
         self.batch_size = args.batch_size
-        self.num_batches = args.num_batches
         self.use_previous_labels = args.use_previous_labels
-        self.result_dir = args.result_dir
+        self.results_dir = args.results_dir
 
     def model_setup(self):
         self.model = LLM(
@@ -248,9 +247,9 @@ class LineClassifier:
 
         return group_dict
 
-    def combine_synonyms(self, output):
+    def combine_synonyms(self, labels):
 
-        junk_labels = self.extract_output(output)
+        junk_labels = self.extract_output(labels)
 
         try:
             with open(
@@ -277,7 +276,9 @@ class LineClassifier:
         json_schema = self.get_response_format(task="synonyms")
         synonym_groups = self.generate(prompts, json_schema)
 
-        junk_labels = self.replace_synonyms(synonym_groups, junk_labels)
+        labels = self.replace_synonyms(synonym_groups, labels)
+
+        return labels
 
     def replace_synonyms(self, synonyms, results):
         # Create a mapping from synonym to its group for fast lookup
@@ -285,16 +286,13 @@ class LineClassifier:
             syn: group for group, members in synonyms.items() for syn in members
         }
 
-        # Replace synonyms and remove possible duplicates
+        # Replace synonyms
         for doc in results.values():
-            replaced = [synonym_map.get(desc, desc) for desc in doc["general"]]
-            seen = set()
-            no_dups = []
-            for item in replaced:
-                if item not in seen:
-                    no_dups.append(item)
-                    seen.add(item)
-            doc["general"] = no_dups
+            replaced = [synonym_map.get(label, label) for label in doc.values()]
+
+    def save_results(self, results):
+        with open(self.results_dir / f"results_{self.run_id}.json", "w") as f:
+            json.dump(results, f)
 
     def process_data(self):
         self.model_setup()
@@ -312,14 +310,95 @@ class LineClassifier:
                 model_input = [self.format_input(batch, vocab) for batch in batches]
                 response_schema = self.get_json_schema("classify")
                 output = self.generate(model_input, response_schema)
-                self.combine_synonyms(output)
+                results = self.combine_synonyms(output)
+                self.save_results(results)
             end_time = time.time()
             logging.info(f"Time taken for document {idx}: {end_time - start_time}")
             if idx > self.stop_index:
                 break
 
 
-def main(args):
+def main():
+
+    parser = argparse.ArgumentParser(
+        description="A script for labelling line quality with LLMs."
+    )
+
+    parser.add_argument(
+        "--run-id", type=str, required=True, help="ID for this run, e.g. run1"
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default="../.cache",
+        help="Path to cache directory, where model is or will be saved.",
+    )
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default="meta-llama/Llama-3.3-70B-Instruct",
+        help="Name of model to use.",
+    )
+    parser.add_argument(
+        "--temperature", type=float, default=0, help="Model temperature."
+    )
+    parser.add_argument(
+        "--max-vocab",
+        type=int,
+        default=-1,
+        help="Max number of labels given in the prompt. Give -1 to use all previous labels.",
+    )
+    parser.add_argument(
+        "--synonym-threshold",
+        type=float,
+        default=0.2,
+        help="""Distance threshold for when two labels should count as synonyms.
+        Smaller value means words are less likely to count as synonyms.""",
+    )
+    parser.add_argument(
+        "--start-index", type=int, default=0, help="Index of first document to analyse."
+    )
+    parser.add_argument(
+        "--stop-index",
+        type=int,
+        default=0,
+        help="Index of last document to analyse. Give -1 to analyse all documents.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=15,
+        help="Max number of lines given to the model at one time.",
+    )
+    parser.add_argument(
+        "--use-previous-labels",
+        action="store_true",
+        help="Use descriptors used in a previous run as a starting point.",
+    )
+    parser.add_argument(
+        "--results_dir",
+        type=str,
+        default=None,
+        help="Path to directory, where results will be saved. Will be created, if it does not exist yet.",
+    )
+
+    args = parser.parse_args()
+
+    # Set the default value for --results_dir after parsing args
+    if not args.results_dir:
+        args.results_dir = f"../results/{args.run_id}"
+
+    # Create required directories
+    os.makedirs("../logs", exist_ok=True)
+    os.makedirs("../results", exist_ok=True)
+    os.makedirs(args.results_dir, exist_ok=True)
+
+    # Log the run settings
+    with open(f"{args.results_dir}/{args.run_id}_settings.txt", "w") as f:
+        f.write(f"slurm id: {os.environ.get('SLURM_JOB_ID')}\n")
+        for arg, value in vars(args).items():
+            logging.info(f"{arg}: {value}")
+            f.write(f"{arg}: {value}\n")
 
     lc = LineClassifier(args)
     lc.process_data()
