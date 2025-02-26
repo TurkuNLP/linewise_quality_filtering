@@ -12,7 +12,7 @@ import re
 import time
 
 # Third party imports
-from datasets import load_dataset
+from datasets import load_dataset  # type: ignore
 import pandas as pd  # type: ignore
 from pydantic import BaseModel, RootModel  # type: ignore
 from sentence_transformers import SentenceTransformer  # type: ignore
@@ -24,7 +24,7 @@ from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 
 # Local imports
-# from embed import StellaEmbedder
+from embed import StellaEmbedder
 import prompts
 
 # Configure logging
@@ -324,17 +324,6 @@ def main(args):
     lc = LineClassifier(args)
     lc.process_data()
     logging.info("Done.")
-
-    # Save output.
-    with open(f"../results/{save_file}", "a") as f:
-        dict = {"doc": doc, "content": doc_output}
-        f.write(json.dumps(dict, ensure_ascii=False))
-        f.write("\n")
-
-    with open(f"../results/junk_labels.txt", "w") as f:
-        for line in junk_labels:
-            f.write(line)
-            f.write("\n")
 
 
 if __name__ == "__main__":
