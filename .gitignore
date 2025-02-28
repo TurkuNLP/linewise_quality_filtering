@@ -4,6 +4,7 @@ results/
 logs/
 .cache/
 cache/
+core
 
 
 # Byte-compiled / optimized / DLL files
