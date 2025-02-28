@@ -27,14 +27,14 @@ PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-run_id="test1"
+run_id="hplt_test"
 
 srun python3 label_lines.py --run-id=$run_id \
                             --temperature=0.1 \
                             --batch-size=15 \
                             --max-vocab=15 \
                             --synonym-threshold=0.3 \
-                            --start-index=10 \
+                            --start-index=0 \
                             --stop-index=1000 \
 
 gpu-energy --diff

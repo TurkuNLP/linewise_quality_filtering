@@ -50,8 +50,8 @@ class LineClassifier:
         self.start_index = args.start_index
         self.stop_index = args.stop_index
         self.batch_size = args.batch_size
-        self.use_previous_labels = args.use_previous_labels
         self.results_dir = Path(args.results_dir)
+        self.language = args.language
 
     def model_setup(self):
         self.model = LLM(
@@ -177,15 +177,24 @@ class LineClassifier:
         return GuidedDecodingParams(json=RootModel[schema_map[task]].model_json_schema())
 
     def load_data(self):
-        return load_dataset("HuggingFaceFW/fineweb",
-                            name="sample-10BT",
+        languages = {"english": "eng_Latn",
+                     "german": "deu_Latn",
+                     "french": "fra_Latn",
+                     "italian": "ita_Latn",
+                     "portuguese": "por_Latn",
+                     "hindi": "hin_Deva",
+                     "spanish": "spa_Latn", 
+                     "thai": "tha_Thai"}
+        
+        return load_dataset("HPLT/HPLT2.0_cleaned",
+                            name=languages[self.language.lower()],
                             split="train",
                             streaming=True
                             )
 
     def load_previous_labels(self):
         junk_labels = Counter()
-        file_path = self.results_dir / f"descriptor_vocab_{self.run_id}.tsv"
+        file_path = self.results_dir / f"label_vocab_{self.run_id}.tsv"
         
         if file_path.exists():
             with open(file_path, "r") as f:
@@ -234,9 +243,13 @@ class LineClassifier:
     def combine_synonyms(self, model_output: list[dict]):
         # Get a list of non-clean labels
         junk_labels = self.extract_junk_labels(model_output)
+        
+        # If there are not junk labels, we can skip synonym finding
+        if len(junk_labels) == 0:
+            return model_output
 
         # Append previous non-clean labels, if they exist
-        file_path = self.results_dir / f"descriptor_vocab_{self.run_id}.tsv"
+        file_path = self.results_dir / f"label_vocab_{self.run_id}.tsv"
         if file_path.exists():
             with open(file_path, "r") as f:
                 file = f.readlines()
@@ -245,33 +258,25 @@ class LineClassifier:
         # Remove duplicates
         junk_labels = list(set(junk_labels))
         
-        logging.info(f"Junk Labels: {junk_labels}")
-        
-        # If there are fewer than 2 junk labels, we can skip synonym finding.
+        # If there are still fewer than 2 junk labels, we can skip synonym finding.
         if len(junk_labels) < 2:
             return model_output
                 
         # Embed labels
         embedder = StellaEmbedder()
-        embeddings = embedder.embed_descriptors(junk_labels)
-        logging.info(f"Embeddings: {embeddings}")
+        embeddings = embedder.embed_labels(junk_labels)
 
         # Group similar labels
         synonym_candidates = self.cluster_similar_labels(junk_labels, embeddings)
-        logging.info(f"Synonym candidates: {synonym_candidates}")
 
         # Use LLM to evaluate and form final synonyms
         prompts = [
             self.format_input(task="synonyms", group_name=group_name, synonyms=syns)
             for group_name, syns in synonym_candidates.items()
         ]
-        
-        logging.info(f"Synonym prompts: {prompts}")
 
         json_schema = self.get_json_schema(task="synonyms")
         synonym_groups = self.generate(prompts, json_schema)
-        
-        logging.info(f"Model ouput synonym groups: {synonym_groups}")
         
         # Make dictionary from LLM outputs
         synonyms = {}
@@ -281,8 +286,6 @@ class LineClassifier:
                     synonyms[key].extend(value)
                 else:
                     synonyms[key] = value
-        
-        logging.info(f"Final synonym groups: {synonyms}")
 
         replaced_output = self.replace_synonyms(synonyms, model_output)
 
@@ -296,12 +299,13 @@ class LineClassifier:
 
         # Replace synonyms
         for batch in model_output:
-            replaced = [synonym_map.get(label, label) for label in batch.values()]
+            for line_num, label in batch.items():
+                batch[line_num] = synonym_map.get(label, label)
             
-        return replaced
+        return model_output
     
     def update_previous_results(self, synonyms):
-        file_path = self.results_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl"
+        file_path = self.results_dir / f"results_{self.run_id}.jsonl"
         
         if file_path.exists():
             with open(file_path, "r") as f:
@@ -338,9 +342,7 @@ class LineClassifier:
         junk_labels = self.extract_junk_labels(results)
         vocab.update(junk_labels)
         
-        logging.info(f"Saving junk labels: {junk_labels}")
-        
-        with open(self.results_dir / f"descriptor_vocab_{self.run_id}.tsv", "w", encoding="utf8") as f:
+        with open(self.results_dir / f"label_vocab_{self.run_id}.tsv", "w", encoding="utf8") as f:
             for item in vocab.most_common():
                 f.write(f"{item[0]}\t{item[1]}\n")
 
@@ -356,11 +358,14 @@ class LineClassifier:
             
             # Load previous labels, if they exits, else start with empty vocab
             vocab_counts = self.load_previous_labels()
-            vocab = [label[0] for label in vocab_counts.most_common(self.max_vocab)]
+            # Keep max_vocab most common labels and shuffle them. These will be given to model as options.
+            vocab = shuffle([label[0] for label in vocab_counts.most_common(self.max_vocab)])
             start_time = time.time()
             
             # Split document into even batches
             batches = self.batched(document["text"])
+            
+            logging.info(f"Input batches: {batches}")
             
             # Format prompt
             model_input = [self.format_input(input_lines=batch, vocab=vocab, task="classify") for batch in batches]
@@ -368,18 +373,15 @@ class LineClassifier:
             
             # Generate labels for lines in bathces
             output = self.generate(model_input, response_schema)
-            logging.info(output)
             
             # Combine labels that are (near) synonymous
             synonyms = self.combine_synonyms(output)
-            logging.info(synonyms)
             
             # Update previously saved results with new synonyms
             self.update_previous_results(synonyms)
             
             # Format results for saving
             results = self.format_results(synonyms, batches)
-            logging.info(results)
             
             # Save results and junk labels
             self.save_results(document, results)
@@ -443,15 +445,16 @@ def main():
         help="Max number of lines given to the model at one time.",
     )
     parser.add_argument(
-        "--use-previous-labels",
-        action="store_true",
-        help="Use descriptors used in a previous run as a starting point.",
-    )
-    parser.add_argument(
         "--results_dir",
         type=str,
         default=None,
         help="Path to directory, where results will be saved. Will be created, if it does not exist yet.",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="english",
+        help="Language of data."
     )
 
     args = parser.parse_args()
