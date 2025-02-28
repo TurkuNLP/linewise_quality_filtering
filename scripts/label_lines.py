@@ -1,6 +1,7 @@
 # Standard libraries
 import argparse
 from collections import Counter
+import csv
 import json
 import logging
 import math
@@ -50,7 +51,7 @@ class LineClassifier:
         self.stop_index = args.stop_index
         self.batch_size = args.batch_size
         self.use_previous_labels = args.use_previous_labels
-        self.results_dir = args.results_dir
+        self.results_dir = Path(args.results_dir)
 
     def model_setup(self):
         self.model = LLM(
@@ -76,14 +77,23 @@ class LineClassifier:
         batched_outputs = self.model.generate(
             model_input, sampling_params=sampling_params, use_tqdm=False
         )
-
+        
         outputs = [out.outputs[0].text.strip(" `\njson") for out in batched_outputs]
 
+        MAX_RETRIES = 2
         validated_outputs = []
         for output in outputs:
-            if not self.validate_json(output):
-                output = self.generate(output, response_schema)
-            validated_outputs.append(output)
+            retries = 0
+            while retries < MAX_RETRIES and not self.validate_json(output):
+                logging.warning(f"Invalid JSON detected. Retrying... (Attempt {retries+1})")
+                output = self.model.generate([output], sampling_params=sampling_params, use_tqdm=False)[0].outputs[0].text.strip(" `\njson")
+                retries += 1
+
+            if self.validate_json(output):
+                validated_outputs.append(json.loads(output, strict=False))
+            else:
+                logging.error("Failed to generate valid JSON after retries. Skipping output.")
+                validated_outputs.append({})
 
         return validated_outputs
 
@@ -111,18 +121,7 @@ class LineClassifier:
 
     def batched(self, doc):
         lines = doc.strip().split("\n")
-        total_lines = len(lines)
-
-        # Determine the number of batches
-        num_batches = math.ceil(total_lines / self.batch_size)
-
-        # If not evenly divisible, adjust batch sizes to be as even as possible
-        batch_size = math.ceil(total_lines / num_batches)
-
-        # Split into batches
-        batches = [lines[i : i + batch_size] for i in range(0, total_lines, batch_size)]
-
-        return batches
+        return np.array_split(lines, math.ceil(len(lines) / self.batch_size))
 
     def validate_json(self, model_output):
         try:
@@ -134,17 +133,14 @@ class LineClassifier:
             logging.debug(repr(model_output))
         return False
 
-    def extract_junk_labels(self, output):
-        """Extract junk labels from output and add them to the junk list."""
-        labels = [label for label in output.values()]
+    def extract_junk_labels(self, batches: list[dict]) -> list:
+        labels = [batch.values() for batch in batches]
 
         junk_labels = []
         for label in labels:
             label = label.lower().strip()
             if label != "clean":
                 junk_labels.append(label)
-
-        junk_labels = list(set(junk_labels))
 
         return junk_labels
 
@@ -178,7 +174,7 @@ class LineClassifier:
 
         if task == "classify":
 
-            class ResponseFormat(BaseModel):
+            class ResponseFormat(RootModel):
                 root: dict[str, str]
 
         elif task == "synonyms":
@@ -190,22 +186,22 @@ class LineClassifier:
         return GuidedDecodingParams(json=json_schema)
 
     def load_data(self):
-        return load_dataset("HuggingFaceFW/fineweb", name="sample-10BT", split="train")
+        return load_dataset("HuggingFaceFW/fineweb",
+                            name="sample-10BT",
+                            split="train",
+                            streaming=True
+                            )
 
     def load_previous_labels(self):
         junk_labels = Counter()
-        try:
-            with open(
-                self.result_dir / f"descriptor_vocab_{self.run_id}.tsv", "r"
-            ) as f:
-                file = f.readlines()
-                for line in file:
-                    line = line.strip().split("\t")
-                    label, freq = line[0], int(line[1])
-                    junk_labels[label] += freq
-            return junk_labels
-        except FileNotFoundError:
-            return junk_labels
+        file_path = self.results_dir / f"descriptor_vocab_{self.run_id}.tsv"
+        
+        if file_path.exists():
+            with open(file_path, "r") as f:
+                reader = csv.reader(f, delimiter="\t")
+                junk_labels.update({row[0]: int(row[1]) for row in reader})
+                
+        return junk_labels
 
     def find_synonym_candidates(self, labels, embeddings):
         # Convert embeddings to NumPy array if needed
@@ -247,24 +243,26 @@ class LineClassifier:
 
         return group_dict
 
-    def combine_synonyms(self, labels):
+    def combine_synonyms(self, model_output: list[dict]):
+        
+        # Get a list of non-clean labels
+        junk_labels = self.extract_junk_labels(model_output)
 
-        junk_labels = self.extract_output(labels)
-
-        try:
-            with open(
-                self.result_dir / f"descriptor_vocab_{self.run_id}.tsv", "r"
-            ) as f:
+        # Append previous non-clean labels, if they exist
+        file_path = self.result_dir / f"descriptor_vocab_{self.run_id}.tsv"
+        if file_path.exists():
+            with open(file_path, "r") as f:
                 file = f.readlines()
                 junk_labels = [line.split("\t")[0] for line in file] + junk_labels
-        except FileNotFoundError:
-            pass
 
-        # Embed best descriptors
+        # Remove duplicates
+        junk_labels = list(set(junk_labels))
+        
+        # Embed labels
         embedder = StellaEmbedder()
         embeddings = embedder.embed_descriptors(junk_labels)
 
-        # Group similar descriptors
+        # Group similar labels
         synonym_candidates = self.find_synonym_candidates(junk_labels, embeddings)
 
         # Use LLM to evaluate and form final synonyms
@@ -276,9 +274,9 @@ class LineClassifier:
         json_schema = self.get_response_format(task="synonyms")
         synonym_groups = self.generate(prompts, json_schema)
 
-        labels = self.replace_synonyms(synonym_groups, labels)
+        replaced_output = self.replace_synonyms(synonym_groups, model_output)
 
-        return labels
+        return replaced_output
 
     def replace_synonyms(self, synonyms, results):
         # Create a mapping from synonym to its group for fast lookup
@@ -289,29 +287,76 @@ class LineClassifier:
         # Replace synonyms
         for doc in results.values():
             replaced = [synonym_map.get(label, label) for label in doc.values()]
+            
+        return replaced
+    
+    def update_previous_results(self, synonyms):
+        file_path = self.results_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl"
+        
+        if file_path.exists():
+            with open(file_path, "r") as f:
+                prev_results = {}
+                file = [json.loads(line.strip()) for line in f.readlines()]
+                for idx, doc in enumerate(file):
+                    prev_results[idx] = doc
 
-    def save_results(self, results):
-        with open(self.results_dir / f"results_{self.run_id}.json", "w") as f:
-            json.dump(results, f)
+            self.replace_synonyms(synonyms, prev_results)
+            
+            with open(file_path, "w") as f:
+                for doc in prev_results.values():
+                    json_line = json.dumps(doc, ensure_ascii=False)
+                    f.write(json_line + "\n")
+
+    def format_results(self, label_lists, batches):
+        
+        results = []
+        for labels, batch in zip(label_lists, batches):
+            for label, line in zip(labels, batch):
+                dict = {"line": line,
+                        "label": label}
+                results.append(dict)
+                
+        return results
+             
+    def save_results(self, document, results):
+        with open(self.results_dir / f"results_{self.run_id}.json", "a") as f:
+            dict = {'doc': document, 'content': results}
+            f.write(json.dumps(dict, ensure_ascii=False))
+            f.write('\n')
+            
+    def save_junk_labels(self, results, vocab):
+        junk_labels = self.extract_junk_labels(results, remove_duplicates=False)
+        vocab.update(junk_labels)
+        
+        with open(self.results_dir / f"descriptor_vocab_{self.run_id}.tsv", "w", encoding="utf8") as f:
+            for item in vocab.most_common():
+                f.write(f"{item[0]}\t{item[1]}\n")
 
     def process_data(self):
-        self.model_setup()
+        logging.info("Loading data...")
         data = self.load_data()
-        if self.use_previous_labels:
-            vocab = self.load_previous_labels("junk_labels.tsv")
-        else:
-            vocab = Counter()
-
-        for idx, doc in enumerate(data["text"]):
+        logging.info("Loading model...")
+        self.model_setup()
+        logging.info("Starting pipeline.")
+        for idx, document in enumerate(data):
             if idx < self.start_index:
                 continue
+            vocab_counts = self.load_previous_labels()
+            vocab = [label[0] for label in vocab_counts.most_common(self.max_vocab)]
+            doc_text = document["text"]
             start_time = time.time()
-            for batches in self.batched(doc):
-                model_input = [self.format_input(batch, vocab) for batch in batches]
-                response_schema = self.get_json_schema("classify")
-                output = self.generate(model_input, response_schema)
-                results = self.combine_synonyms(output)
-                self.save_results(results)
+            batches = self.batched(doc_text)
+            model_input = [self.format_input(input_lines=batch, vocab=vocab, task="classify") for batch in batches]
+            response_schema = self.get_json_schema("classify")
+            output = self.generate(model_input, response_schema)
+            logging.info(output)
+            synonyms = self.combine_synonyms(output)
+            logging.info(synonyms)
+            self.update_previous_results(synonyms)
+            results = self.format_results(synonyms, batches)
+            logging.info(results)
+            self.save_results(document, results)
+            self.save_junk_labels(results, vocab_counts)
             end_time = time.time()
             logging.info(f"Time taken for document {idx}: {end_time - start_time}")
             if idx > self.stop_index:
