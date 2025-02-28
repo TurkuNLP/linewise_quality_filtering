@@ -2,7 +2,7 @@
 #SBATCH --job-name=vllm_inference
 #SBATCH --account=project_462000353
 #SBATCH --partition=dev-g
-#SBATCH --time=00:45:00
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=15
@@ -34,7 +34,7 @@ srun python3 label_lines.py --run-id=$run_id \
                             --batch-size=15 \
                             --max-vocab=15 \
                             --synonym-threshold=0.3 \
-                            --start-index=0 \
+                            --start-index=10 \
                             --stop-index=1000 \
 
 gpu-energy --diff
