@@ -1,7 +1,7 @@
-def line_quality_prompt(lines, vocab):
+def line_quality_prompt(lines, vocab, language):
     return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-    You are an expert text classifier specializing in LLM training data. Your task is to classify each line or passage of text based on its suitability for inclusion in a language model training dataset. High-quality content is clean, meaningful, well-structured, and useful for training language models. Low-quality content includes boilerplate elements (e.g., navigation menus, footers), non-linguistic symbols, formatting tags, placeholders like 'Lorem ipsum', Personally Identifiable Information, and spammy, irrelevant, or toxic language.
+    You are an expert text classifier specializing in LLM training data. You will be given a passage from a document in {language} and your task is to classify each line of text based on its suitability for inclusion in a language model training dataset. High-quality content is clean, meaningful, well-structured, and useful for training language models. Low-quality content includes boilerplate elements (e.g., navigation menus, footers), non-linguistic content, formatting tags, placeholders like 'Lorem ipsum', and spammy, irrelevant, or toxic language.
     
 **Instructions:**
 
@@ -22,23 +22,20 @@ def line_quality_prompt(lines, vocab):
 
 4. **Focus on Linguistic Content**:
    - Retain valuable and diverse linguistic content suitable for language model pre-training, including natural language patterns, standard advertising copy, commercial language, and promotional content written in natural language.
-
-5. **Tolerance for Minor Errors and Toxic Language**:
    - Minor grammatical errors, typos, or small mistakes do not disqualify a line from being "Clean." Only exclude lines with pervasive errors that significantly hinder understanding.
    - Mild expletives and controversial opinions do not disqualify a line from being "Clean." Only exclude lines with blatantly hateful, harmful or toxic content.
 
-6. **Output Format**:
+5. **Output Format**:
    - Your output must have exactly the same number of lines as the input, matching each line number correctly.
-   - Output only the line number followed by the label, separated by a colon.
+   - Output only the line number followed by the label in JSON format.
    - Do not include any additional text or explanations.
-   - Do not output dashes between the lines.
 
 **Guidelines for "Clean" Lines**:
 
 Assign "Clean" to lines that:
 
 - Represent natural language suitable for training language models.
-- Include informal internet language, grammatical errors, questions, partial sentences, and common online expressions.
+- Include informal and non-standard language, grammatical errors, questions, partial sentences, and common online expressions.
 - Contain standard advertising or commercial language in natural sentences.
 - Have properly formatted titles, headings, and readable content, even with stylistic elements.
 - Include minor in-text elements like email addresses, dates, or URLs within natural sentences.
@@ -49,12 +46,12 @@ Assign "Clean" to lines that:
 Lines not classified as "Clean" need a specific and descriptive label. Examples include lines that:
 
 - Contain blatantly hateful or harmful language. 
-- Include disclaimers, copyright notices, terms, and conditions.
+- Include disclaimers, copyright notices, or terms and conditions.
 - Consist of menu items, login links, buttons, or navigation menus.
 - Contain random characters, garbled text, or excessive symbols.
 - Include programming code, HTML tags, or markup languages (when actual code or markup appears).
 - Present keywords, tags, or similar data without sufficient context.
-- Are irrelevant or spam-like content not suitable for training.
+- Are spam-like content not suitable for training.
 - Are **excessively** promotional without natural language structure (e.g., a list of product names and prices without sentences).
 
 **Possible Labels for Non-"Clean" Lines**:
@@ -77,7 +74,7 @@ Line 4: <div>Content</div>
 {{
 "Line 1": "Clean",
 "Line 2": "Clean",
-"Line 3": "Encoding Errors",
+"Line 3": "Non-Linguistic Content",
 "Line 4": "HTML Tags"
 }}<|eot_id|><|start_header_id|>user<|end_header_id|>
 

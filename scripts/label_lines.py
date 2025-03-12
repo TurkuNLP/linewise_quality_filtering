@@ -2,6 +2,7 @@
 import argparse
 from collections import Counter
 import csv
+import datetime
 import json
 import logging
 import math
@@ -14,9 +15,7 @@ import time
 
 # Third party imports
 from datasets import load_dataset  # type: ignore
-import pandas as pd  # type: ignore
-from pydantic import BaseModel, RootModel  # type: ignore
-from sentence_transformers import SentenceTransformer  # type: ignore
+from pydantic import RootModel  # type: ignore
 from scipy.spatial.distance import cdist  # type: ignore
 from sklearn.cluster import AgglomerativeClustering  # type: ignore
 import torch  # type: ignore
@@ -105,14 +104,16 @@ class LineClassifier:
         if task == "classify":
             formatted_lines = ""
             for i, line in enumerate(input_lines):
+                if line == "<start of document>" or line == "<end of document>":
+                    formatted_lines += line + "\n"
                 formatted_lines += f"*Line {i+1}:* {line}\n------\n"
 
-            if len(vocab) == 0:
+            if not vocab:
                 vocab = (
                     "The list is currently empty. You are free to create new labels."
                 )
 
-            prompt = prompts.line_quality_prompt(formatted_lines, vocab)
+            prompt = prompts.line_quality_prompt(formatted_lines, vocab, self.language)
             return prompt
 
         if task == "synonyms":
@@ -120,6 +121,7 @@ class LineClassifier:
             return prompt
 
     def batched(self, doc):
+        #doc = "<start of document>\n" + doc.strip() + "\n<end of document>"
         lines = doc.strip().split("\n")
         return np.array_split(lines, math.ceil(len(lines) / self.batch_size))
 
@@ -177,21 +179,28 @@ class LineClassifier:
         return GuidedDecodingParams(json=RootModel[schema_map[task]].model_json_schema())
 
     def load_data(self):
-        languages = {"english": "eng_Latn",
-                     "german": "deu_Latn",
-                     "french": "fra_Latn",
-                     "italian": "ita_Latn",
-                     "portuguese": "por_Latn",
-                     "hindi": "hin_Deva",
-                     "spanish": "spa_Latn", 
-                     "thai": "tha_Thai"}
+        languages = {
+            "english": "eng_Latn",
+            "german": "deu_Latn",
+            "french": "fra_Latn",
+            "italian": "ita_Latn",
+            "portuguese": "por_Latn",
+            "hindi": "hin_Deva",
+            "spanish": "spa_Latn", 
+            "thai": "tha_Thai",
+            }
+        
+        if self.language.lower() not in languages:
+            raise KeyError(f"{self.language} is an invalid language option. "
+                           f"Should be one of the following: {list(languages.keys())}")
         
         return load_dataset("HPLT/HPLT2.0_cleaned",
                             name=languages[self.language.lower()],
                             split="train",
-                            streaming=True
+                            streaming=True,
+                            cache_dir=self.cache_dir
                             )
-
+                    
     def load_previous_labels(self):
         junk_labels = Counter()
         file_path = self.results_dir / f"label_vocab_{self.run_id}.tsv"
@@ -240,6 +249,45 @@ class LineClassifier:
 
         return group_dict
 
+    def evaluate_synonym_candidates(self, synonym_candidates):
+        
+        # Separate single-label and multi-label groups
+        # Single-label groups can skip LLM evaluation
+        single_label_groups = {k: v for k, v in synonym_candidates.items() if len(v) == 1}
+        multi_label_groups = {k: v for k, v in synonym_candidates.items() if len(v) > 1}
+
+        # Use LLM only for multi-label groups
+        if multi_label_groups:
+            prompts = [
+                self.format_input(task="synonyms", group_name=group_name, synonyms=syns)
+                for group_name, syns in multi_label_groups.items()
+            ]
+
+            json_schema = self.get_json_schema(task="synonyms")
+            generated_groups = self.generate(prompts, json_schema)
+        else:
+            generated_groups = []
+
+        # Make dictionary from LLM outputs
+        generated_synonyms = {}
+        for d in generated_groups:
+            for key, value in d.items():
+                if key in generated_synonyms:
+                    generated_synonyms[key].extend(value)
+                else:
+                    generated_synonyms[key] = value
+                    
+        # Merge single-label groups and generated groups
+        final_synonym_groups = {}
+
+        for key, value in {**generated_synonyms, **single_label_groups}.items():
+            if key in final_synonym_groups:
+                final_synonym_groups[key] = list(set(final_synonym_groups[key] + value))  # Merge without duplicates
+            else:
+                final_synonym_groups[key] = value
+                
+        return final_synonym_groups
+
     def combine_synonyms(self, model_output: list[dict]):
         # Get a list of non-clean labels
         junk_labels = self.extract_junk_labels(model_output)
@@ -268,26 +316,13 @@ class LineClassifier:
 
         # Group similar labels
         synonym_candidates = self.cluster_similar_labels(junk_labels, embeddings)
-
-        # Use LLM to evaluate and form final synonyms
-        prompts = [
-            self.format_input(task="synonyms", group_name=group_name, synonyms=syns)
-            for group_name, syns in synonym_candidates.items()
-        ]
-
-        json_schema = self.get_json_schema(task="synonyms")
-        synonym_groups = self.generate(prompts, json_schema)
         
-        # Make dictionary from LLM outputs
-        synonyms = {}
-        for d in synonym_groups:
-            for key, value in d.items():
-                if key in synonyms:
-                    synonyms[key].extend(value)
-                else:
-                    synonyms[key] = value
+        synonyms = self.evaluate_synonym_candidates(synonym_candidates)
 
         replaced_output = self.replace_synonyms(synonyms, model_output)
+        
+        # Update previously saved results with new synonyms
+        self.update_previous_results(synonyms)
 
         return replaced_output
 
@@ -299,8 +334,10 @@ class LineClassifier:
 
         # Replace synonyms
         for batch in model_output:
-            for line_num, label in batch.items():
-                batch[line_num] = synonym_map.get(label, label)
+            for key, label in batch.items():
+                if key == "line":
+                    continue
+                batch[key] = synonym_map.get(label, label)
             
         return model_output
     
@@ -309,15 +346,13 @@ class LineClassifier:
         
         if file_path.exists():
             with open(file_path, "r") as f:
-                prev_results = {}
-                file = [json.loads(line.strip()) for line in f.readlines()]
-                for idx, doc in enumerate(file):
-                    prev_results[idx] = doc
-
-            self.replace_synonyms(synonyms, prev_results)
+                prev_results = [json.loads(line.strip()) for line in f.readlines()]
+                
+            for document in prev_results:
+                document["content"] = self.replace_synonyms(synonyms, document["content"])
             
             with open(file_path, "w") as f:
-                for doc in prev_results.values():
+                for doc in prev_results:
                     json_line = json.dumps(doc, ensure_ascii=False)
                     f.write(json_line + "\n")
 
@@ -333,9 +368,15 @@ class LineClassifier:
         return results
              
     def save_results(self, document, results):
+        
+        def serialize_datetime(obj): 
+            if isinstance(obj, datetime.datetime): 
+                return obj.isoformat() 
+            raise TypeError(f"Type not serializable: {obj}") 
+        
         with open(self.results_dir / f"results_{self.run_id}.jsonl", "a", encoding="utf8") as f:
             dict = {"doc": document, "content": results}
-            f.write(json.dumps(dict, ensure_ascii=False))
+            f.write(json.dumps(dict, ensure_ascii=False, default=serialize_datetime))
             f.write("\n")
             
     def save_junk_labels(self, results, vocab):
@@ -352,6 +393,10 @@ class LineClassifier:
         logging.info("Loading model...")
         self.model_setup()
         logging.info("Starting pipeline.")
+        
+        #Keep track of processing times
+        times = []
+        
         for idx, document in enumerate(data):
             if idx < self.start_index:
                 continue
@@ -359,13 +404,12 @@ class LineClassifier:
             # Load previous labels, if they exits, else start with empty vocab
             vocab_counts = self.load_previous_labels()
             # Keep max_vocab most common labels and shuffle them. These will be given to model as options.
-            vocab = shuffle([label[0] for label in vocab_counts.most_common(self.max_vocab)])
+            vocab = [label[0] for label in vocab_counts.most_common(self.max_vocab)]
+            shuffle(vocab)
             start_time = time.time()
             
             # Split document into even batches
             batches = self.batched(document["text"])
-            
-            logging.info(f"Input batches: {batches}")
             
             # Format prompt
             model_input = [self.format_input(input_lines=batch, vocab=vocab, task="classify") for batch in batches]
@@ -377,17 +421,24 @@ class LineClassifier:
             # Combine labels that are (near) synonymous
             synonyms = self.combine_synonyms(output)
             
-            # Update previously saved results with new synonyms
-            self.update_previous_results(synonyms)
-            
             # Format results for saving
             results = self.format_results(synonyms, batches)
             
             # Save results and junk labels
             self.save_results(document, results)
             self.save_junk_labels(synonyms, vocab_counts)
+            
+            # Keep track of time taken
             end_time = time.time()
-            logging.info(f"Time taken for document {idx}: {time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}")
+            time_taken = end_time-start_time
+            logging.info(f"Time taken for document {idx} consisting of {len(batches)} batches: "
+                         f"{time.strftime('%H:%M:%S', time.gmtime(time_taken))}")
+            times.append(time_taken)
+            if idx > 0 and idx % 50 == 0:
+                mean_time = np.mean(times)
+                logging.info(f"Mean time taken per document: "
+                             f"{time.strftime('%H:%M:%S', time.gmtime(mean_time))}")
+                times = [mean_time]
             if idx > self.stop_index:
                 break
 
