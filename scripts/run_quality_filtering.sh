@@ -27,7 +27,7 @@ PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-run_id="hplt_fr"
+run_id="hplt_en"
 
 srun python3 label_lines.py --run-id=$run_id \
                             --temperature=0.1 \
@@ -36,7 +36,7 @@ srun python3 label_lines.py --run-id=$run_id \
                             --synonym-threshold=0.3 \
                             --start-index=0 \
                             --stop-index=10000 \
-                            --language="french"
+                            --language="english"
 
 gpu-energy --diff
 
