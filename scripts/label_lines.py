@@ -1,6 +1,8 @@
 # Standard libraries
 import argparse
 from collections import Counter
+import csv
+import datetime
 import json
 import logging
 import math
@@ -13,9 +15,7 @@ import time
 
 # Third party imports
 from datasets import load_dataset  # type: ignore
-import pandas as pd  # type: ignore
-from pydantic import BaseModel, RootModel  # type: ignore
-from sentence_transformers import SentenceTransformer  # type: ignore
+from pydantic import RootModel  # type: ignore
 from scipy.spatial.distance import cdist  # type: ignore
 from sklearn.cluster import AgglomerativeClustering  # type: ignore
 import torch  # type: ignore
@@ -49,8 +49,8 @@ class LineClassifier:
         self.start_index = args.start_index
         self.stop_index = args.stop_index
         self.batch_size = args.batch_size
-        self.use_previous_labels = args.use_previous_labels
-        self.results_dir = args.results_dir
+        self.results_dir = Path(args.results_dir)
+        self.language = args.language
 
     def model_setup(self):
         self.model = LLM(
@@ -76,14 +76,23 @@ class LineClassifier:
         batched_outputs = self.model.generate(
             model_input, sampling_params=sampling_params, use_tqdm=False
         )
-
+        
         outputs = [out.outputs[0].text.strip(" `\njson") for out in batched_outputs]
 
+        MAX_RETRIES = 2
         validated_outputs = []
         for output in outputs:
-            if not self.validate_json(output):
-                output = self.generate(output, response_schema)
-            validated_outputs.append(output)
+            retries = 0
+            while retries < MAX_RETRIES and not self.validate_json(output):
+                logging.warning(f"Invalid JSON detected. Retrying... (Attempt {retries+1})")
+                output = self.model.generate([output], sampling_params=sampling_params, use_tqdm=False)[0].outputs[0].text.strip(" `\njson")
+                retries += 1
+
+            if self.validate_json(output):
+                validated_outputs.append(json.loads(output, strict=False))
+            else:
+                logging.error("Failed to generate valid JSON after retries. Skipping output.")
+                validated_outputs.append({})
 
         return validated_outputs
 
@@ -95,14 +104,16 @@ class LineClassifier:
         if task == "classify":
             formatted_lines = ""
             for i, line in enumerate(input_lines):
+                if line == "<start of document>" or line == "<end of document>":
+                    formatted_lines += line + "\n"
                 formatted_lines += f"*Line {i+1}:* {line}\n------\n"
 
-            if len(vocab) == 0:
+            if not vocab:
                 vocab = (
                     "The list is currently empty. You are free to create new labels."
                 )
 
-            prompt = prompts.line_quality_prompt(formatted_lines, vocab)
+            prompt = prompts.line_quality_prompt(formatted_lines, vocab, self.language)
             return prompt
 
         if task == "synonyms":
@@ -110,19 +121,9 @@ class LineClassifier:
             return prompt
 
     def batched(self, doc):
+        #doc = "<start of document>\n" + doc.strip() + "\n<end of document>"
         lines = doc.strip().split("\n")
-        total_lines = len(lines)
-
-        # Determine the number of batches
-        num_batches = math.ceil(total_lines / self.batch_size)
-
-        # If not evenly divisible, adjust batch sizes to be as even as possible
-        batch_size = math.ceil(total_lines / num_batches)
-
-        # Split into batches
-        batches = [lines[i : i + batch_size] for i in range(0, total_lines, batch_size)]
-
-        return batches
+        return np.array_split(lines, math.ceil(len(lines) / self.batch_size))
 
     def validate_json(self, model_output):
         try:
@@ -134,17 +135,13 @@ class LineClassifier:
             logging.debug(repr(model_output))
         return False
 
-    def extract_junk_labels(self, output):
-        """Extract junk labels from output and add them to the junk list."""
-        labels = [label for label in output.values()]
-
+    def extract_junk_labels(self, batches: list[dict]) -> list:
         junk_labels = []
-        for label in labels:
-            label = label.lower().strip()
-            if label != "clean":
-                junk_labels.append(label)
-
-        junk_labels = list(set(junk_labels))
+        
+        for batch in batches:
+            for label in batch.values():
+                if label.lower().strip() != "clean":
+                    junk_labels.append(label)
 
         return junk_labels
 
@@ -175,42 +172,47 @@ class LineClassifier:
         return segments
 
     def get_json_schema(self, task):
-
-        if task == "classify":
-
-            class ResponseFormat(BaseModel):
-                root: dict[str, str]
-
-        elif task == "synonyms":
-
-            class ResponseFormat(RootModel):
-                root: dict[str, list[str]]
-
-        json_schema = ResponseFormat.model_json_schema()
-        return GuidedDecodingParams(json=json_schema)
+        schema_map = {
+        "classify": dict[str, str],
+        "synonyms": dict[str, list[str]],
+        }
+        return GuidedDecodingParams(json=RootModel[schema_map[task]].model_json_schema())
 
     def load_data(self):
-        return load_dataset("HuggingFaceFW/fineweb", name="sample-10BT", split="train")
-
+        languages = {
+            "english": "eng_Latn",
+            "german": "deu_Latn",
+            "french": "fra_Latn",
+            "italian": "ita_Latn",
+            "portuguese": "por_Latn",
+            "hindi": "hin_Deva",
+            "spanish": "spa_Latn", 
+            "thai": "tha_Thai",
+            }
+        
+        if self.language.lower() not in languages:
+            raise KeyError(f"{self.language} is an invalid language option. "
+                           f"Should be one of the following: {list(languages.keys())}")
+        
+        return load_dataset("HPLT/HPLT2.0_cleaned",
+                            name=languages[self.language.lower()],
+                            split="train",
+                            streaming=True,
+                            cache_dir=self.cache_dir
+                            )
+                    
     def load_previous_labels(self):
         junk_labels = Counter()
-        try:
-            with open(
-                self.result_dir / f"descriptor_vocab_{self.run_id}.tsv", "r"
-            ) as f:
-                file = f.readlines()
-                for line in file:
-                    line = line.strip().split("\t")
-                    label, freq = line[0], int(line[1])
-                    junk_labels[label] += freq
-            return junk_labels
-        except FileNotFoundError:
-            return junk_labels
+        file_path = self.results_dir / f"label_vocab_{self.run_id}.tsv"
+        
+        if file_path.exists():
+            with open(file_path, "r") as f:
+                reader = csv.reader(f, delimiter="\t")
+                junk_labels.update({row[0]: int(row[1]) for row in reader})
+                
+        return junk_labels
 
-    def find_synonym_candidates(self, labels, embeddings):
-        # Convert embeddings to NumPy array if needed
-        embeddings = np.array(embeddings)
-
+    def cluster_similar_labels(self, labels, embeddings):
         # Identify and remove zero vectors
         valid_indices = [
             i for i, vec in enumerate(embeddings) if np.linalg.norm(vec) > 0
@@ -226,11 +228,11 @@ class LineClassifier:
             metric="cosine",
             linkage="average",
         )
-        labels = clustering.fit_predict(embeddings)
+        cluster_assignments = clustering.fit_predict(embeddings)
 
         # Group words by cluster labels
         groups = {}
-        for idx, label in enumerate(labels):
+        for idx, label in enumerate(cluster_assignments):
             groups.setdefault(label, []).append(idx)
 
         # Find the medoid for each group
@@ -247,73 +249,196 @@ class LineClassifier:
 
         return group_dict
 
-    def combine_synonyms(self, labels):
+    def evaluate_synonym_candidates(self, synonym_candidates):
+        
+        # Separate single-label and multi-label groups
+        # Single-label groups can skip LLM evaluation
+        single_label_groups = {k: v for k, v in synonym_candidates.items() if len(v) == 1}
+        multi_label_groups = {k: v for k, v in synonym_candidates.items() if len(v) > 1}
 
-        junk_labels = self.extract_output(labels)
+        # Use LLM only for multi-label groups
+        if multi_label_groups:
+            prompts = [
+                self.format_input(task="synonyms", group_name=group_name, synonyms=syns)
+                for group_name, syns in multi_label_groups.items()
+            ]
 
-        try:
-            with open(
-                self.result_dir / f"descriptor_vocab_{self.run_id}.tsv", "r"
-            ) as f:
+            json_schema = self.get_json_schema(task="synonyms")
+            generated_groups = self.generate(prompts, json_schema)
+        else:
+            generated_groups = []
+
+        # Make dictionary from LLM outputs
+        generated_synonyms = {}
+        for d in generated_groups:
+            for key, value in d.items():
+                if key in generated_synonyms:
+                    generated_synonyms[key].extend(value)
+                else:
+                    generated_synonyms[key] = value
+                    
+        # Merge single-label groups and generated groups
+        final_synonym_groups = {}
+
+        for key, value in {**generated_synonyms, **single_label_groups}.items():
+            if key in final_synonym_groups:
+                final_synonym_groups[key] = list(set(final_synonym_groups[key] + value))  # Merge without duplicates
+            else:
+                final_synonym_groups[key] = value
+                
+        return final_synonym_groups
+
+    def combine_synonyms(self, model_output: list[dict]):
+        # Get a list of non-clean labels
+        junk_labels = self.extract_junk_labels(model_output)
+        
+        # If there are not junk labels, we can skip synonym finding
+        if len(junk_labels) == 0:
+            return model_output
+
+        # Append previous non-clean labels, if they exist
+        file_path = self.results_dir / f"label_vocab_{self.run_id}.tsv"
+        if file_path.exists():
+            with open(file_path, "r") as f:
                 file = f.readlines()
                 junk_labels = [line.split("\t")[0] for line in file] + junk_labels
-        except FileNotFoundError:
-            pass
 
-        # Embed best descriptors
+        # Remove duplicates
+        junk_labels = list(set(junk_labels))
+        
+        # If there are still fewer than 2 junk labels, we can skip synonym finding.
+        if len(junk_labels) < 2:
+            return model_output
+                
+        # Embed labels
         embedder = StellaEmbedder()
-        embeddings = embedder.embed_descriptors(junk_labels)
+        embeddings = embedder.embed_labels(junk_labels)
 
-        # Group similar descriptors
-        synonym_candidates = self.find_synonym_candidates(junk_labels, embeddings)
+        # Group similar labels
+        synonym_candidates = self.cluster_similar_labels(junk_labels, embeddings)
+        
+        synonyms = self.evaluate_synonym_candidates(synonym_candidates)
 
-        # Use LLM to evaluate and form final synonyms
-        prompts = [
-            self.format_prompt(task="synonyms", group_name=group_name, synonyms=syns)
-            for group_name, syns in synonym_candidates.items()
-        ]
+        replaced_output = self.replace_synonyms(synonyms, model_output)
+        
+        # Update previously saved results with new synonyms
+        self.update_previous_results(synonyms)
 
-        json_schema = self.get_response_format(task="synonyms")
-        synonym_groups = self.generate(prompts, json_schema)
+        return replaced_output
 
-        labels = self.replace_synonyms(synonym_groups, labels)
-
-        return labels
-
-    def replace_synonyms(self, synonyms, results):
+    def replace_synonyms(self, synonyms, model_output):
         # Create a mapping from synonym to its group for fast lookup
         synonym_map = {
             syn: group for group, members in synonyms.items() for syn in members
         }
 
         # Replace synonyms
-        for doc in results.values():
-            replaced = [synonym_map.get(label, label) for label in doc.values()]
+        for batch in model_output:
+            for key, label in batch.items():
+                if key == "line":
+                    continue
+                batch[key] = synonym_map.get(label, label)
+            
+        return model_output
+    
+    def update_previous_results(self, synonyms):
+        file_path = self.results_dir / f"results_{self.run_id}.jsonl"
+        
+        if file_path.exists():
+            with open(file_path, "r") as f:
+                prev_results = [json.loads(line.strip()) for line in f.readlines()]
+                
+            for document in prev_results:
+                document["content"] = self.replace_synonyms(synonyms, document["content"])
+            
+            with open(file_path, "w") as f:
+                for doc in prev_results:
+                    json_line = json.dumps(doc, ensure_ascii=False)
+                    f.write(json_line + "\n")
 
-    def save_results(self, results):
-        with open(self.results_dir / f"results_{self.run_id}.json", "w") as f:
-            json.dump(results, f)
+    def format_results(self, label_lists, batches):
+        results = []
+        
+        for labels, batch in zip(label_lists, batches):
+            for label, line in zip(labels, batch):
+                dict = {"line": line,
+                        "label": labels[label]}
+                results.append(dict)
+                
+        return results
+             
+    def save_results(self, document, results):
+        
+        def serialize_datetime(obj): 
+            if isinstance(obj, datetime.datetime): 
+                return obj.isoformat() 
+            raise TypeError(f"Type not serializable: {obj}") 
+        
+        with open(self.results_dir / f"results_{self.run_id}.jsonl", "a", encoding="utf8") as f:
+            dict = {"doc": document, "content": results}
+            f.write(json.dumps(dict, ensure_ascii=False, default=serialize_datetime))
+            f.write("\n")
+            
+    def save_junk_labels(self, results, vocab):
+        junk_labels = self.extract_junk_labels(results)
+        vocab.update(junk_labels)
+        
+        with open(self.results_dir / f"label_vocab_{self.run_id}.tsv", "w", encoding="utf8") as f:
+            for item in vocab.most_common():
+                f.write(f"{item[0]}\t{item[1]}\n")
 
     def process_data(self):
-        self.model_setup()
+        logging.info("Loading data...")
         data = self.load_data()
-        if self.use_previous_labels:
-            vocab = self.load_previous_labels("junk_labels.tsv")
-        else:
-            vocab = Counter()
-
-        for idx, doc in enumerate(data["text"]):
+        logging.info("Loading model...")
+        self.model_setup()
+        logging.info("Starting pipeline.")
+        
+        #Keep track of processing times
+        times = []
+        
+        for idx, document in enumerate(data):
             if idx < self.start_index:
                 continue
+            
+            # Load previous labels, if they exits, else start with empty vocab
+            vocab_counts = self.load_previous_labels()
+            # Keep max_vocab most common labels and shuffle them. These will be given to model as options.
+            vocab = [label[0] for label in vocab_counts.most_common(self.max_vocab)]
+            shuffle(vocab)
             start_time = time.time()
-            for batches in self.batched(doc):
-                model_input = [self.format_input(batch, vocab) for batch in batches]
-                response_schema = self.get_json_schema("classify")
-                output = self.generate(model_input, response_schema)
-                results = self.combine_synonyms(output)
-                self.save_results(results)
+            
+            # Split document into even batches
+            batches = self.batched(document["text"])
+            
+            # Format prompt
+            model_input = [self.format_input(input_lines=batch, vocab=vocab, task="classify") for batch in batches]
+            response_schema = self.get_json_schema("classify")
+            
+            # Generate labels for lines in bathces
+            output = self.generate(model_input, response_schema)
+            
+            # Combine labels that are (near) synonymous
+            synonyms = self.combine_synonyms(output)
+            
+            # Format results for saving
+            results = self.format_results(synonyms, batches)
+            
+            # Save results and junk labels
+            self.save_results(document, results)
+            self.save_junk_labels(synonyms, vocab_counts)
+            
+            # Keep track of time taken
             end_time = time.time()
-            logging.info(f"Time taken for document {idx}: {end_time - start_time}")
+            time_taken = end_time-start_time
+            logging.info(f"Time taken for document {idx} consisting of {len(batches)} batches: "
+                         f"{time.strftime('%H:%M:%S', time.gmtime(time_taken))}")
+            times.append(time_taken)
+            if idx > 0 and idx % 50 == 0:
+                mean_time = np.mean(times)
+                logging.info(f"Mean time taken per document: "
+                             f"{time.strftime('%H:%M:%S', time.gmtime(mean_time))}")
+                times = [mean_time]
             if idx > self.stop_index:
                 break
 
@@ -371,15 +496,16 @@ def main():
         help="Max number of lines given to the model at one time.",
     )
     parser.add_argument(
-        "--use-previous-labels",
-        action="store_true",
-        help="Use descriptors used in a previous run as a starting point.",
-    )
-    parser.add_argument(
         "--results_dir",
         type=str,
         default=None,
         help="Path to directory, where results will be saved. Will be created, if it does not exist yet.",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="english",
+        help="Language of data."
     )
 
     args = parser.parse_args()

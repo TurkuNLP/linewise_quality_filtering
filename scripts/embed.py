@@ -22,7 +22,7 @@ class StellaEmbedder:
         )
         self.batch_size = batch_size
 
-    def embed_descriptors(self, texts):
+    def embed_labels(self, texts):
         all_embeddings = []
         for i in range(0, len(texts), self.batch_size):
             batch_texts = texts[i : i + self.batch_size]
