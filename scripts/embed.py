@@ -4,12 +4,12 @@ import numpy as np
 
 
 class StellaEmbedder:
-    def __init__(self, batch_size=32):
+    def __init__(self, cache_dir, batch_size=32):
         self.model = (
             AutoModel.from_pretrained(
                 "Marqo/dunzhang-stella_en_400M_v5",
                 trust_remote_code=True,
-                cache_dir = "../.cache"
+                cache_dir = cache_dir
             )
             .cuda()
             .eval()
@@ -18,7 +18,7 @@ class StellaEmbedder:
         self.tokenizer = AutoTokenizer.from_pretrained(
             "Marqo/dunzhang-stella_en_400M_v5",
             trust_remote_code=True,
-            cache_dir = "../.cache"
+            cache_dir = cache_dir
         )
         self.batch_size = batch_size
 

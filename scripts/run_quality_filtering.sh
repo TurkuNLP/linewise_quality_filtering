@@ -11,32 +11,34 @@
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
 
+# Load pytorch module
 module purge
 module use /appl/local/csc/modulefiles
 module load pytorch
 
-# activate venv to use sentence_transformers, since it's not part of the pytorch module.
-# If you don't use sentence_transformers, all you need is in the pytorch module.
+# Activate venv
 source ../.venv/bin/activate
 
-# Apparently some hipster library likes to fill your home folder with cache, so put it in scratch instead.
-TRITON_HOME="../.cache/"
+# Check if you are logged in to HuggingFace
+echo "HuggingFace username:"
+huggingface-cli whoami
 
 # Memory management
 PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-run_id="hplt_en"
+run_id="hplt_en_classification"
 
 srun python3 label_lines.py --run-id=$run_id \
                             --temperature=0.1 \
-                            --batch-size=15 \
+                            --batch-size=10 \
                             --max-vocab=50 \
                             --synonym-threshold=0.3 \
-                            --start-index=0 \
-                            --stop-index=10000 \
-                            --language="english"
+                            --start-index=10002 \
+                            --stop-index=40000 \
+                            --language="english" \
+                            --use-fixed-labels
 
 gpu-energy --diff
 

@@ -15,6 +15,7 @@ import time
 
 # Third party imports
 from datasets import load_dataset  # type: ignore
+import json_repair # type: ignore
 from pydantic import RootModel  # type: ignore
 from scipy.spatial.distance import cdist  # type: ignore
 from sklearn.cluster import AgglomerativeClustering  # type: ignore
@@ -40,8 +41,8 @@ logging.basicConfig(
 class LineClassifier:
 
     def __init__(self, args):
+        self.cache_dir = args.cache_dir or os.environ["HF_HOME"]
         self.run_id = args.run_id
-        self.cache_dir = args.cache_dir
         self.model_name = args.model_name
         self.temperature = args.temperature
         self.max_vocab = args.max_vocab
@@ -51,6 +52,9 @@ class LineClassifier:
         self.batch_size = args.batch_size
         self.results_dir = Path(args.results_dir)
         self.language = args.language
+        self.use_fixed_labels = args.use_fixed_labels
+        self.label_counts = self.load_previous_labels()
+        self.embedder = StellaEmbedder(self.cache_dir)
 
     def model_setup(self):
         self.model = LLM(
@@ -59,7 +63,6 @@ class LineClassifier:
             dtype="bfloat16",
             max_model_len=128_000,
             tensor_parallel_size=torch.cuda.device_count(),
-            # pipeline_parallel_size=2, # use if multiple nodes are needed
             enforce_eager=False,
             gpu_memory_utilization=0.8,
         )
@@ -79,21 +82,8 @@ class LineClassifier:
         
         outputs = [out.outputs[0].text.strip(" `\njson") for out in batched_outputs]
 
-        MAX_RETRIES = 2
-        validated_outputs = []
-        for output in outputs:
-            retries = 0
-            while retries < MAX_RETRIES and not self.validate_json(output):
-                logging.warning(f"Invalid JSON detected. Retrying... (Attempt {retries+1})")
-                output = self.model.generate([output], sampling_params=sampling_params, use_tqdm=False)[0].outputs[0].text.strip(" `\njson")
-                retries += 1
-
-            if self.validate_json(output):
-                validated_outputs.append(json.loads(output, strict=False))
-            else:
-                logging.error("Failed to generate valid JSON after retries. Skipping output.")
-                validated_outputs.append({})
-
+        validated_outputs = [json_repair.loads(output) for output in outputs]
+        
         return validated_outputs
 
     def format_input(
@@ -101,39 +91,29 @@ class LineClassifier:
     ):
         """Format input lines."""
 
-        if task == "classify":
+        if task == "generate_labels" or task == "classify":
             formatted_lines = ""
             for i, line in enumerate(input_lines):
-                if line == "<start of document>" or line == "<end of document>":
-                    formatted_lines += line + "\n"
-                formatted_lines += f"*Line {i+1}:* {line}\n------\n"
+                formatted_lines += f"Line {i+1}: {line}\n------\n"
 
+            if task == "classify":
+                prompt = prompts.classify(formatted_lines, self.language)
+                return prompt
+            
             if not vocab:
                 vocab = (
                     "The list is currently empty. You are free to create new labels."
                 )
-
-            prompt = prompts.line_quality_prompt(formatted_lines, vocab, self.language)
+            prompt = prompts.generate_labels(formatted_lines, vocab, self.language)
             return prompt
-
-        if task == "synonyms":
+        
+        elif task == "synonyms":
             prompt = prompts.review_synonyms(group_name, synonyms)
             return prompt
 
     def batched(self, doc):
-        #doc = "<start of document>\n" + doc.strip() + "\n<end of document>"
         lines = doc.strip().split("\n")
         return np.array_split(lines, math.ceil(len(lines) / self.batch_size))
-
-    def validate_json(self, model_output):
-        try:
-            json.loads(model_output, strict=False)
-            return True
-        except json.JSONDecodeError as e:
-            logging.debug(e)
-            logging.debug("Invalid JSON output:")
-            logging.debug(repr(model_output))
-        return False
 
     def extract_junk_labels(self, batches: list[dict]) -> list:
         junk_labels = []
@@ -174,6 +154,7 @@ class LineClassifier:
     def get_json_schema(self, task):
         schema_map = {
         "classify": dict[str, str],
+        "generate_labels": dict[str, str],
         "synonyms": dict[str, list[str]],
         }
         return GuidedDecodingParams(json=RootModel[schema_map[task]].model_json_schema())
@@ -379,13 +360,63 @@ class LineClassifier:
             f.write(json.dumps(dict, ensure_ascii=False, default=serialize_datetime))
             f.write("\n")
             
-    def save_junk_labels(self, results, vocab):
+    def save_junk_labels(self, results):
         junk_labels = self.extract_junk_labels(results)
-        vocab.update(junk_labels)
+        self.label_counts.update(junk_labels)
         
         with open(self.results_dir / f"label_vocab_{self.run_id}.tsv", "w", encoding="utf8") as f:
-            for item in vocab.most_common():
+            for item in self.label_counts.most_common():
                 f.write(f"{item[0]}\t{item[1]}\n")
+                
+    def label_generation_pipeline(self, document):
+        """This pipeline is used when the argument use_fixed labels is not given.
+        This pipeline will let the LLM generate labels to lines freely, inventing new labels
+        as more lines are processed. The generated labels are then compared against each other
+        to find synonyms. Synonyms are combined to keep the total number of labels reasonable.
+        """
+        # Keep max_vocab most common labels and shuffle them. These will be given to model as options.
+        vocab = [label[0] for label in self.label_counts.most_common(self.max_vocab)]
+        shuffle(vocab)
+        
+        # Split document into even batches
+        batches = self.batched(document["text"])
+        
+        # Put lines into a prompt and get JSON schema
+        model_input = [self.format_input(input_lines=batch, vocab=vocab, task="generate_labels") for batch in batches]
+        response_schema = self.get_json_schema("generate_labels")
+
+        # Let model generate labels and invent new ones when needed
+        output = self.generate(model_input, response_schema)
+        
+        # Combine labels that are (near) synonymous
+        synonyms = self.combine_synonyms(output)
+        # Format results for saving
+        results = self.format_results(synonyms, batches)
+        self.save_junk_labels(synonyms)
+        
+        # Save results
+        self.save_results(document, results)
+        
+    def classification_pipeline(self, document):
+        """This pipeline is used when the argument use_fixed_labels is given.
+        This pipeline will task the LLM with classifying each line into pre-determined categories:
+        either a line is 'Clean' or it is given one of eight low-quality labels."""
+        # Split document into even batches
+        batches = self.batched(document["text"])
+        
+        # Put lines into a prompt and get JSON schema
+        model_input = [self.format_input(input_lines=batch, task="classify") for batch in batches]
+        response_schema = self.get_json_schema("classify")
+
+        # Classify lines according to a fixed label set.
+        output = self.generate(model_input, response_schema)
+        
+        # Format results for saving
+        results = self.format_results(output, batches)
+        
+        # Save results
+        self.save_results(document, results)
+        self.save_junk_labels(output)
 
     def process_data(self):
         logging.info("Loading data...")
@@ -400,38 +431,20 @@ class LineClassifier:
         for idx, document in enumerate(data):
             if idx < self.start_index:
                 continue
+            if idx >= self.stop_index:
+                break
             
-            # Load previous labels, if they exits, else start with empty vocab
-            vocab_counts = self.load_previous_labels()
-            # Keep max_vocab most common labels and shuffle them. These will be given to model as options.
-            vocab = [label[0] for label in vocab_counts.most_common(self.max_vocab)]
-            shuffle(vocab)
             start_time = time.time()
             
-            # Split document into even batches
-            batches = self.batched(document["text"])
-            
-            # Format prompt
-            model_input = [self.format_input(input_lines=batch, vocab=vocab, task="classify") for batch in batches]
-            response_schema = self.get_json_schema("classify")
-            
-            # Generate labels for lines in bathces
-            output = self.generate(model_input, response_schema)
-            
-            # Combine labels that are (near) synonymous
-            synonyms = self.combine_synonyms(output)
-            
-            # Format results for saving
-            results = self.format_results(synonyms, batches)
-            
-            # Save results and junk labels
-            self.save_results(document, results)
-            self.save_junk_labels(synonyms, vocab_counts)
+            if self.use_fixed_labels:
+                self.classification_pipeline(document)
+            else:
+                self.label_generation_pipeline(document)
             
             # Keep track of time taken
             end_time = time.time()
             time_taken = end_time-start_time
-            logging.info(f"Time taken for document {idx} consisting of {len(batches)} batches: "
+            logging.info(f"Time taken for document {idx}: "
                          f"{time.strftime('%H:%M:%S', time.gmtime(time_taken))}")
             times.append(time_taken)
             if idx > 0 and idx % 50 == 0:
@@ -439,8 +452,6 @@ class LineClassifier:
                 logging.info(f"Mean time taken per document: "
                              f"{time.strftime('%H:%M:%S', time.gmtime(mean_time))}")
                 times = [mean_time]
-            if idx > self.stop_index:
-                break
 
 
 def main():
@@ -453,16 +464,15 @@ def main():
         "--run-id", type=str, required=True, help="ID for this run, e.g. run1"
     )
     parser.add_argument(
-        "--cache-dir",
-        type=str,
-        default="../.cache",
-        help="Path to cache directory, where model is or will be saved.",
-    )
-    parser.add_argument(
         "--model-name",
         type=str,
         default="meta-llama/Llama-3.3-70B-Instruct",
         help="Name of model to use.",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        help="Path to cache directory, where model is or will be saved.",
     )
     parser.add_argument(
         "--temperature", type=float, default=0, help="Model temperature."
@@ -506,6 +516,11 @@ def main():
         type=str,
         default="english",
         help="Language of data."
+    )
+    parser.add_argument(
+        "--use-fixed-labels",
+        action="store_true",
+        help="Use a fixed set of labels instead of generating a new label taxonomy.",
     )
 
     args = parser.parse_args()
