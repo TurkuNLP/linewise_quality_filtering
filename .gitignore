@@ -5,6 +5,7 @@ logs/
 .cache/
 cache/
 core
+mlruns/
 
 
 # Byte-compiled / optimized / DLL files
