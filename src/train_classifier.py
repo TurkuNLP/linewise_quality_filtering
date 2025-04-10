@@ -94,22 +94,6 @@ def compute_metrics(pred, label_names):
         "recall": recall,
     }
 
-def optimization_config():
-    return {
-    "algorithm": "bayes",
-    "parameters": {
-        "learning_rate": {"type": "float", "scaling_type": "log_uniform", "min": 0.00001, "max": 0.001},
-        "batch_size": {"type": "discrete", "values": [32, 64, 128]},
-    },
-
-    # Declare what to optimize, and how:
-    "spec": {
-      "maxCombo": 20,
-      "metric": "loss",
-      "objective": "minimize",
-    },
-    }
-
 def calculate_class_weights(dataset):
     labels = dataset["train"]["label"]
     unique_labels = np.unique(labels)
@@ -122,20 +106,16 @@ def calculate_class_weights(dataset):
 
 # Main function to run the training process
 def main(args):
-    
-    if args.optimize:
-        opt = comet_ml.Optimizer(config=optimization_config())
 
-    else:
-        global experiment
-        experiment = comet_ml.start(
-            api_key = os.environ["COMET_API_KEY"],
-            project_name="linewise-quality-filtering"
-        )
-        os.environ["COMET_LOG_ASSETS"] = "True"
+    global experiment
+    experiment = comet_ml.start(
+        api_key = os.environ["COMET_API_KEY"],
+        project_name="linewise-quality-filtering"
+    )
+    os.environ["COMET_LOG_ASSETS"] = "True"
 
     # Load data
-    dataset = load_from_disk("../data/hplt_fr_linequality")
+    dataset = load_from_disk(args.data_path)
     
     # Get model path
     saved_model_path = Path("..") / "results" / "finetuned_models" / str(args.run_id)
@@ -200,7 +180,7 @@ def main(args):
             logging_dir=saved_model_path / "logs",
             logging_steps=100,
             save_steps=200,
-            save_total_limit=2,
+            save_total_limit=1,
             load_best_model_at_end=True,
             metric_for_best_model="loss",
             per_device_train_batch_size=16,
@@ -243,6 +223,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", type=str, required=True)
+    parser.add_argument("--data-path", type=str, required=True)
     parser.add_argument("--base-model", type=str, default="FacebookAI/xlm-roberta-large" )
     parser.add_argument("--learning-rate", type=float, default=0.00001)
     parser.add_argument("--train", action="store_true")

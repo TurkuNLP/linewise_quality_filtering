@@ -169,6 +169,8 @@ class LineClassifier:
             "hindi": "hin_Deva",
             "spanish": "spa_Latn", 
             "thai": "tha_Thai",
+            "finnish": "fin_Latn",
+            "turkish": "tur_Latn",
             }
         
         if self.language.lower() not in languages:
@@ -425,33 +427,20 @@ class LineClassifier:
         self.model_setup()
         logging.info("Starting pipeline.")
         
-        #Keep track of processing times
-        times = []
-        
         for idx, document in enumerate(data):
             if idx < self.start_index:
                 continue
             if idx >= self.stop_index:
                 break
-            
-            start_time = time.time()
-            
+                        
             if self.use_fixed_labels:
                 self.classification_pipeline(document)
             else:
                 self.label_generation_pipeline(document)
-            
-            # Keep track of time taken
-            end_time = time.time()
-            time_taken = end_time-start_time
-            logging.info(f"Time taken for document {idx}: "
-                         f"{time.strftime('%H:%M:%S', time.gmtime(time_taken))}")
-            times.append(time_taken)
-            if idx > 0 and idx % 50 == 0:
-                mean_time = np.mean(times)
-                logging.info(f"Mean time taken per document: "
-                             f"{time.strftime('%H:%M:%S', time.gmtime(mean_time))}")
-                times = [mean_time]
+
+            # Keep track of progress
+            if idx > 0 and idx % 1000 == 0:
+                logging.info(f"Processed {idx+1} documents.")
 
 
 def main():
@@ -527,7 +516,7 @@ def main():
 
     # Set the default value for --results_dir after parsing args
     if not args.results_dir:
-        args.results_dir = f"../results/{args.run_id}"
+        args.results_dir = f"../results/LLM_labelled_data/{args.run_id}"
 
     # Create required directories
     os.makedirs("../logs", exist_ok=True)
