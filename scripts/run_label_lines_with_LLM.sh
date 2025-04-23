@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=vllm_inference
+#SBATCH --job-name=label_lines_with_LLM
 #SBATCH --account=project_462000353
 #SBATCH --partition=standard-g
 #SBATCH --time=2-00:00:00
@@ -28,17 +28,17 @@ PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-run_id="hplt_en_classification"
+run_id="hplt_deu_Latn"
 
-srun python3 label_lines.py --run-id=$run_id \
-                            --temperature=0.1 \
-                            --batch-size=10 \
-                            --max-vocab=50 \
-                            --synonym-threshold=0.3 \
-                            --start-index=10002 \
-                            --stop-index=40000 \
-                            --language="english" \
-                            --use-fixed-labels
+srun python3 ../src/label_lines_with_LLM.py --run-id=$run_id \
+                                            --temperature=0.1 \
+                                            --batch-size=10 \
+                                            --max-vocab=50 \
+                                            --synonym-threshold=0.3 \
+                                            --start-index=13844 \
+                                            --stop-index=40000 \
+                                            --language="german" \
+                                            --use-fixed-labels
 
 gpu-energy --diff
 

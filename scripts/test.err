@@ -1,0 +1,20 @@
+0: + '[' -z '' ']'
+0: + case "$-" in
+0: + __lmod_vx=x
+0: + '[' -n x ']'
+0: + set +x
+0: Shell debugging temporarily silenced: export LMOD_SH_DBG_ON=1 for this output (/opt/cray/pe/lmod/lmod/init/bash)
+0: Shell debugging restarted
+0: + unset __lmod_vx
+0: ++ taskset -p 79825
+0: + echo 'pid 79825'\''s current affinity mask: fe000000000000 -> 0'
+0: + which python
+0: ++ pwd
+0: + python -u train_classifier.py --run-id=line_quality_classifier_eng_Latn --data-path=/pfs/lustrep2/scratch/project_462000353/tarkkaot/linewise_quality_filtering/scripts/../data/train_dev_test/hplt_eng_Latn_linequality --base-model=FacebookAI/xlm-roberta-large --learning-rate=0.00004 --train
+0: Traceback (most recent call last):
+0:   File "/pfs/lustrep2/scratch/project_462000353/tarkkaot/linewise_quality_filtering/scripts/train_classifier.py", line 4, in <module>
+0:     import comet_ml #type:ignore
+0:     ^^^^^^^^^^^^^^^
+0: ModuleNotFoundError: No module named 'comet_ml'
+srun: error: nid007971: task 0: Exited with exit code 1
+srun: Terminating StepId=10380119.0

@@ -1,3 +1,28 @@
+#!/bin/bash -e
+#SBATCH --account=project_462000353
+#SBATCH -J rt-6109
+#SBATCH -p dev-g
+#SBATCH --threads-per-core 1
+#SBATCH --exclusive 
+#SBATCH -N 1
+#SBATCH --gpus 8
+#SBATCH -t 0:10:00 
+#SBATCH --mem 0
+#SBATCH -o test.out
+#SBATCH -e test.err
+
+set -o pipefail
+
+export FI_MR_CACHE_MONITOR=userfaultfd
+export FI_CXI_DEFAULT_CQ_SIZE=131072
+
+# export NCCL_DEBUG=INFO
+# export NCCL_DEBUG_SUBSYS=INIT,COLL
+
+wd=$(realpath .)
+cd $wd
+
+cat > train_classifier.py << EOF
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # for consistency
 
@@ -135,7 +160,9 @@ def main(args):
         os.environ["COMET_LOG_ASSETS"] = "True"
 
     # Load data
-    dataset = load_from_disk(Path("..") / "data" / f"hplt_{args.lang_id}_linequality")
+    # dataset = load_from_disk(args.data_path)
+    dataset = load_dataset('HPLT/HPLT2.0_cleaned', data_files='eng_Latn_1/train-00000-of-00356.parquet')
+    
     
     # Get model path
     saved_model_path = Path(".") / "results" / "finetuned_models" / str(args.run_id)
@@ -173,17 +200,10 @@ def main(args):
     
     print(f"Example tokenized input: {dataset['train'][0]}") 
     
-    if args.use_class_weights:
-        class_weights = calculate_class_weights(dataset)
-        print("Class weights:", class_weights)
-    else:
-        class_weights = None
-        print("Not using class weights.")
-        
-    if args.use_label_smoothing:
-        label_smoothing = 0.1
-    else:
-        label_smoothing = None
+    #Calculate class weigths because label distribution is not equal
+    class_weights = calculate_class_weights(dataset)
+    
+    print("Class weights:", class_weights)
 
     # Shuffle the train split
     dataset["train"] = dataset["train"].shuffle(seed=42)
@@ -202,20 +222,21 @@ def main(args):
             output_dir=saved_model_path,
             learning_rate=args.learning_rate,
             eval_strategy="steps",
-            eval_steps=500,
+            eval_steps=200,
             save_strategy="steps",
             logging_dir=saved_model_path / "logs",
             logging_steps=100,
-            save_steps=500,
-            save_total_limit=2,
+            save_steps=200,
+            save_total_limit=1,
             load_best_model_at_end=True,
             metric_for_best_model="loss",
             per_device_train_batch_size=16,
             per_device_eval_batch_size=16,
             gradient_accumulation_steps=2,
-            num_train_epochs=2,
+            num_train_epochs=4,
             seed=42,
             fp16=True,
+            max_grad_norm=1.0, 
             group_by_length=True,
             report_to=["comet_ml"],
             disable_tqdm=True,
@@ -224,13 +245,13 @@ def main(args):
         trainer = TrainerWithWeightsAndSmoothing(
             model=model,
             args=training_args,
-            train_dataset=dataset["train"],
-            eval_dataset=dataset["validation"],
+            train_dataset=dataset["train"].shard(num_shards=5, index=0),
+            eval_dataset=dataset["validation"].shard(num_shards=5, index=0),
             processing_class=tokenizer,
             compute_metrics=lambda pred: compute_metrics(pred, label_names),
-            callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
+            callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
             class_weights=class_weights,
-            label_smoothing=label_smoothing,
+            label_smoothing=0.1,
         )
         
         if args.train:
@@ -252,9 +273,6 @@ if __name__ == "__main__":
     parser.add_argument("--data-path", type=str, required=True)
     parser.add_argument("--base-model", type=str, default="FacebookAI/xlm-roberta-large" )
     parser.add_argument("--learning-rate", type=float, default=0.00001)
-    parser.add_argument("--lang-id", type=str, default="fra_Latn", help="Language id of training data")
-    parser.add_argument("--use-class-weights", action="store_true")
-    parser.add_argument("--use-label-smoothing", action="store_true")
     parser.add_argument("--train", action="store_true")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--optimize", action="store_true")
@@ -262,3 +280,46 @@ if __name__ == "__main__":
 
     main(args)
 
+EOF
+
+#/pfs/lustrep3/scratch/project_462000394/containers/tested-containers/lumi-pytorch-rocm-6.2.4-python-3.12-pytorch-v2.6.0-dockerhash-ef203c810cc9.sif
+sif=/appl/local/containers/sif-images/lumi-pytorch-rocm-6.2.4-python-3.12-pytorch-v2.6.0.sif
+
+#
+# Execute examples
+#
+
+c=fe
+#
+# Bind mask for one and  thread per core
+#
+MYMASKS1="0x${c}000000000000,0x${c}00000000000000,0x${c}0000,0x${c}000000,0x${c},0x${c}00,0x${c}00000000,0x${c}0000000000"
+
+export MASTER_ADDR=$(scontrol show hostname "$SLURM_NODELIST" | head -n1)
+
+srun \
+ -l \
+  -N 1 \
+  -n 1 \
+  --gpus-per-node 1 \
+  --cpu-bind=mask_cpu:$MYMASKS1 \
+  singularity exec \
+    -B /var/spool/slurmd \
+    -B /opt/cray \
+    -B /usr/lib64/libcxi.so.1 \
+    -B $wd \
+    $sif \
+    bash -eux -c 'echo "$(taskset -p $$) -> $ROCR_VISIBLE_DEVICES" ; \
+    which python ; \
+    python -u train_classifier.py --run-id=line_quality_classifier_eng_Latn \
+                                  --data-path="$(pwd)/../data/train_dev_test/hplt_eng_Latn_linequality" \
+                                  --base-model="FacebookAI/xlm-roberta-large" \
+                                  --learning-rate=0.00004\
+                                  --train'
+
+exit 0
+srun python3 ../src/train_classifier.py --run-id=$run_id \
+                                        --data-path="../data/train_dev_test/hplt_eng_Latn_linequality" \
+                                        --base-model="FacebookAI/xlm-roberta-large" \
+                                        --learning-rate=0.00004 \
+                                        --train 

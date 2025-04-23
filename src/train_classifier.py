@@ -5,7 +5,7 @@ import comet_ml #type:ignore
 import argparse
 from pathlib import Path
 import numpy as np
-from datasets import load_from_disk,  load_dataset #type:ignore
+from datasets import load_from_disk #type:ignore
 from sklearn.metrics import ( #type:ignore
     accuracy_score,
     classification_report,
@@ -94,22 +94,6 @@ def compute_metrics(pred, label_names):
         "recall": recall,
     }
 
-def optimization_config():
-    return {
-    "algorithm": "bayes",
-    "parameters": {
-        "learning_rate": {"type": "float", "scaling_type": "log_uniform", "min": 0.00001, "max": 0.001},
-        "batch_size": {"type": "discrete", "values": [32, 64, 128]},
-    },
-
-    # Declare what to optimize, and how:
-    "spec": {
-      "maxCombo": 20,
-      "metric": "loss",
-      "objective": "minimize",
-    },
-    }
-
 def calculate_class_weights(dataset):
     labels = dataset["train"]["label"]
     unique_labels = np.unique(labels)
@@ -122,23 +106,19 @@ def calculate_class_weights(dataset):
 
 # Main function to run the training process
 def main(args):
-    
-    if args.optimize:
-        opt = comet_ml.Optimizer(config=optimization_config())
 
-    else:
-        global experiment
-        experiment = comet_ml.start(
-            api_key = os.environ["COMET_API_KEY"],
-            project_name="linewise-quality-filtering"
-        )
-        os.environ["COMET_LOG_ASSETS"] = "True"
+    global experiment
+    experiment = comet_ml.start(
+        api_key = os.environ["COMET_API_KEY"],
+        project_name="linewise-quality-filtering"
+    )
+    os.environ["COMET_LOG_ASSETS"] = "True"
 
     # Load data
-    dataset = load_from_disk(Path("..") / "data" / f"hplt_{args.lang_id}_linequality")
+    dataset = load_from_disk(args.data_path)
     
     # Get model path
-    saved_model_path = Path(".") / "results" / "finetuned_models" / str(args.run_id)
+    saved_model_path = Path("..") / "results" / "finetuned_models" / str(args.run_id)
     saved_model_path.mkdir(parents=True, exist_ok=True)
 
     # If training, load the base model; if not, load the saved model
@@ -173,17 +153,10 @@ def main(args):
     
     print(f"Example tokenized input: {dataset['train'][0]}") 
     
-    if args.use_class_weights:
-        class_weights = calculate_class_weights(dataset)
-        print("Class weights:", class_weights)
-    else:
-        class_weights = None
-        print("Not using class weights.")
-        
-    if args.use_label_smoothing:
-        label_smoothing = 0.1
-    else:
-        label_smoothing = None
+    #Calculate class weigths because label distribution is not equal
+    class_weights = calculate_class_weights(dataset)
+    
+    print("Class weights:", class_weights)
 
     # Shuffle the train split
     dataset["train"] = dataset["train"].shuffle(seed=42)
@@ -202,20 +175,21 @@ def main(args):
             output_dir=saved_model_path,
             learning_rate=args.learning_rate,
             eval_strategy="steps",
-            eval_steps=500,
+            eval_steps=200,
             save_strategy="steps",
             logging_dir=saved_model_path / "logs",
             logging_steps=100,
-            save_steps=500,
-            save_total_limit=2,
+            save_steps=200,
+            save_total_limit=1,
             load_best_model_at_end=True,
             metric_for_best_model="loss",
             per_device_train_batch_size=16,
             per_device_eval_batch_size=16,
             gradient_accumulation_steps=2,
-            num_train_epochs=2,
+            num_train_epochs=4,
             seed=42,
-            fp16=True,
+            fp32=True,
+            max_grad_norm=1.0, 
             group_by_length=True,
             report_to=["comet_ml"],
             disable_tqdm=True,
@@ -224,13 +198,13 @@ def main(args):
         trainer = TrainerWithWeightsAndSmoothing(
             model=model,
             args=training_args,
-            train_dataset=dataset["train"],
-            eval_dataset=dataset["validation"],
+            train_dataset=dataset["train"].shard(num_shards=5, index=0),
+            eval_dataset=dataset["validation"].shard(num_shards=5, index=0),
             processing_class=tokenizer,
             compute_metrics=lambda pred: compute_metrics(pred, label_names),
-            callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
+            callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
             class_weights=class_weights,
-            label_smoothing=label_smoothing,
+            label_smoothing=0.1,
         )
         
         if args.train:
@@ -252,13 +226,9 @@ if __name__ == "__main__":
     parser.add_argument("--data-path", type=str, required=True)
     parser.add_argument("--base-model", type=str, default="FacebookAI/xlm-roberta-large" )
     parser.add_argument("--learning-rate", type=float, default=0.00001)
-    parser.add_argument("--lang-id", type=str, default="fra_Latn", help="Language id of training data")
-    parser.add_argument("--use-class-weights", action="store_true")
-    parser.add_argument("--use-label-smoothing", action="store_true")
     parser.add_argument("--train", action="store_true")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--optimize", action="store_true")
     args = parser.parse_args()
 
     main(args)
-
