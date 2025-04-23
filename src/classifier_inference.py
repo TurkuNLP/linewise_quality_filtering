@@ -205,6 +205,7 @@ def file_exists_and_line_count(path):
 # === Example ===
 def main(args):
     #data = load_data(args.language, source=args.data_source)
+    print(f"Loading data from {args.data_path}")
     data = read_jsonl(args.data_path)
     exists, lines = file_exists_and_line_count(args.save_path)
     if exists:

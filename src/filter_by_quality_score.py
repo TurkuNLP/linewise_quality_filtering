@@ -6,10 +6,6 @@ import ast
 import os
 
 def load_data(path):
-    #return load_dataset(
-    #    "TurkuNLP/finerweb-10bt",
-    #    split="train",
-    #    streaming=True)
     dataset = load_dataset(
         "parquet",
         data_files= {"train": path},
@@ -18,52 +14,49 @@ def load_data(path):
     
     return dataset["train"]
 
-def filter_rows_below_threshold(row, quality_threshold):
-    """Remove all lines that fall below quality threshold."""
-    text_lines = row['text'].splitlines()
-    line_quality = row['line_quality']
+def remove_lines(row, quality_threshold, filter=False, trim=False):
+    text_lines = row["text"].splitlines()
+    line_quality = row["line_quality"]
     
     if isinstance(line_quality, str):
         line_quality = line_quality.strip()
         line_quality = ast.literal_eval(line_quality)
-
-    # Filter lines based on the quality threshold
-    filtered_lines = [line for line, quality in zip(text_lines, line_quality) if quality >= quality_threshold]
-
-    # Rebuild the text by joining the filtered lines with newline characters
-    new_text = "\n".join(filtered_lines)
-
-    # Replace the 'text' field with the new preprocessed text
-    row['text'] = new_text
-    return row
-
-def trim_lines_below_threshold(row, quality_threshold):
-    """Remove only lines from start and end of document that fall below quality threshold."""
-    text_lines = row['text'].splitlines()
-    line_quality = row['line_quality']
+        
+    if filter and trim:
+        raise ValueError("Only one of 'trim' or 'filter' can be provided, not both.")
     
-    if isinstance(line_quality, str):
-        line_quality = line_quality.strip()
-        line_quality = ast.literal_eval(line_quality)
+    elif filter:
+        # Filter lines based on the quality threshold
+        filtered_lines = [line for line, quality in zip(text_lines, line_quality) if quality >= quality_threshold]
 
-    # Find start index: first index where quality >= threshold
-    start = 0
-    while start < len(line_quality) and line_quality[start] < quality_threshold:
-        start += 1
+        # Rebuild the text by joining the filtered lines with newline characters
+        row["line_quality"] = [line for line in line_quality if line >= quality_threshold]
+        row["text"] = "\n".join(filtered_lines)
+        return row
+    
+    elif trim:
+        # Find start index: first index where quality >= threshold
+        start = 0
+        while start < len(line_quality) and line_quality[start] < quality_threshold:
+            start += 1
 
-    # Find end index: last index where quality >= threshold
-    end = len(line_quality) - 1
-    while end >= 0 and line_quality[end] < quality_threshold:
-        end -= 1
+        # Find end index: last index where quality >= threshold
+        end = len(line_quality) - 1
+        while end >= 0 and line_quality[end] < quality_threshold:
+            end -= 1
 
-    # Slice only the retained portion
-    if start <= end:
-        filtered_lines = text_lines[start:end+1]
+        # Slice only the retained portion
+        if start <= end:
+            filtered_lines = text_lines[start:end+1]
+        else:
+            filtered_lines = []  # all lines are low quality
+
+        row["line_quality"] = [line for line in line_quality if line >= quality_threshold]
+        row["text"] = "\n".join(filtered_lines)
+        return row
+    
     else:
-        filtered_lines = []  # all lines are low quality
-
-    row['text'] = "\n".join(filtered_lines)
-    return row
+        raise ValueError("Must choose either 'trim' or 'filter'")
 
 def file_exists_and_line_count(path):
     if not os.path.isfile(path):
@@ -110,10 +103,10 @@ if __name__ == "__main__":
         for idx, row in enumerate(data):
             if idx < start_index:
                 continue
-            if args.filter:
-                batched_results.append(filter_rows_below_threshold(row, args.quality_threshold))
-            elif args.trim:
-                batched_results.append(trim_lines_below_threshold(row, args.quality_threshold))
+            processed = remove_lines(row, args.quality_threshold, filter=args.filter, trim=args.trim)
+            # If all lines were removed, remove the document completely.
+            if processed["text"]:
+                batched_results.append(processed)
             # Write in batches of 1k documents to save on I/0
             if len(batched_results) == 1_000:
                 f_out.writelines(f"{json.dumps(result, ensure_ascii=False)}\n" for result in batched_results)

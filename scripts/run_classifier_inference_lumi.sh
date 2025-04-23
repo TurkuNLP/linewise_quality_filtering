@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=classifier_inference
-#SBATCH --account=project_462000615
+#SBATCH --account=project_462000353
 #SBATCH --partition=standard-g
 #SBATCH --time=23:50:00
 #SBATCH --nodes=1
@@ -21,10 +21,11 @@ source ../.venv/bin/activate
 
 gpu-energy --save
 
-DATA_DIR="$1"
-OUT_DIR="/scratch/project_462000353/tarkkaot/linewise_quality_filtering/data/fineweb2_fra_line_quality_labelled_split"
+DATA_DIR="$2"
+OUT_DIR="../data/fineweb2_fra_line_quality_labelled_split"
 
-files="$2"
+files="$1"
+# files = "path/to/file1,path/to/file2,path/to/file3"
 
 # Convert comma-separated list to array
 IFS=',' read -ra file_array <<< "$files"
@@ -32,9 +33,13 @@ IFS=',' read -ra file_array <<< "$files"
 # Process each file
 for i in "${!file_array[@]}"; do
     filename="${file_array[i]}"
+    filename=$(basename "$filename") #remove full path
     input_path="$DATA_DIR/$filename"
     output_path="$OUT_DIR/$filename"
-        
+    
+    echo "Loading data from $input_path"
+    echo "Saving results to $output_path"
+
     srun \
         --ntasks=1 \
         --gres=gpu:mi250:1 \

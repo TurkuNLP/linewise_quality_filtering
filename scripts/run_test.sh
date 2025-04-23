@@ -1,3 +1,28 @@
+#!/bin/bash -e
+#SBATCH --account=project_462000353
+#SBATCH -J rt-6109
+#SBATCH -p dev-g
+#SBATCH --threads-per-core 1
+#SBATCH --exclusive 
+#SBATCH -N 1
+#SBATCH --gpus 8
+#SBATCH -t 0:10:00 
+#SBATCH --mem 0
+#SBATCH -o test.out
+#SBATCH -e test.err
+
+set -o pipefail
+
+export FI_MR_CACHE_MONITOR=userfaultfd
+export FI_CXI_DEFAULT_CQ_SIZE=131072
+
+# export NCCL_DEBUG=INFO
+# export NCCL_DEBUG_SUBSYS=INIT,COLL
+
+wd=$(realpath .)
+cd $wd
+
+cat > train_classifier.py << EOF
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # for consistency
 
@@ -5,7 +30,7 @@ import comet_ml #type:ignore
 import argparse
 from pathlib import Path
 import numpy as np
-from datasets import load_from_disk #type:ignore
+from datasets import load_from_disk,  load_dataset #type:ignore
 from sklearn.metrics import ( #type:ignore
     accuracy_score,
     classification_report,
@@ -94,6 +119,22 @@ def compute_metrics(pred, label_names):
         "recall": recall,
     }
 
+def optimization_config():
+    return {
+    "algorithm": "bayes",
+    "parameters": {
+        "learning_rate": {"type": "float", "scaling_type": "log_uniform", "min": 0.00001, "max": 0.001},
+        "batch_size": {"type": "discrete", "values": [32, 64, 128]},
+    },
+
+    # Declare what to optimize, and how:
+    "spec": {
+      "maxCombo": 20,
+      "metric": "loss",
+      "objective": "minimize",
+    },
+    }
+
 def calculate_class_weights(dataset):
     labels = dataset["train"]["label"]
     unique_labels = np.unique(labels)
@@ -106,19 +147,25 @@ def calculate_class_weights(dataset):
 
 # Main function to run the training process
 def main(args):
+    
+    if args.optimize:
+        opt = comet_ml.Optimizer(config=optimization_config())
 
-    global experiment
-    experiment = comet_ml.start(
-        api_key = os.environ["COMET_API_KEY"],
-        project_name="linewise-quality-filtering"
-    )
-    os.environ["COMET_LOG_ASSETS"] = "True"
+    else:
+        global experiment
+        experiment = comet_ml.start(
+            api_key = os.environ["COMET_API_KEY"],
+            project_name="linewise-quality-filtering"
+        )
+        os.environ["COMET_LOG_ASSETS"] = "True"
 
     # Load data
-    dataset = load_from_disk(args.data_path)
+    # dataset = load_from_disk(args.data_path)
+    dataset = load_dataset('HPLT/HPLT2.0_cleaned', data_files='eng_Latn_1/train-00000-of-00356.parquet')
+    
     
     # Get model path
-    saved_model_path = Path("..") / "results" / "finetuned_models" / str(args.run_id)
+    saved_model_path = Path(".") / "results" / "finetuned_models" / str(args.run_id)
     saved_model_path.mkdir(parents=True, exist_ok=True)
 
     # If training, load the base model; if not, load the saved model
@@ -188,7 +235,7 @@ def main(args):
             gradient_accumulation_steps=2,
             num_train_epochs=4,
             seed=42,
-            fp32=True,
+            fp16=True,
             max_grad_norm=1.0, 
             group_by_length=True,
             report_to=["comet_ml"],
@@ -232,3 +279,47 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
+
+EOF
+
+#/pfs/lustrep3/scratch/project_462000394/containers/tested-containers/lumi-pytorch-rocm-6.2.4-python-3.12-pytorch-v2.6.0-dockerhash-ef203c810cc9.sif
+sif=/appl/local/containers/sif-images/lumi-pytorch-rocm-6.2.4-python-3.12-pytorch-v2.6.0.sif
+
+#
+# Execute examples
+#
+
+c=fe
+#
+# Bind mask for one and  thread per core
+#
+MYMASKS1="0x${c}000000000000,0x${c}00000000000000,0x${c}0000,0x${c}000000,0x${c},0x${c}00,0x${c}00000000,0x${c}0000000000"
+
+export MASTER_ADDR=$(scontrol show hostname "$SLURM_NODELIST" | head -n1)
+
+srun \
+ -l \
+  -N 1 \
+  -n 1 \
+  --gpus-per-node 1 \
+  --cpu-bind=mask_cpu:$MYMASKS1 \
+  singularity exec \
+    -B /var/spool/slurmd \
+    -B /opt/cray \
+    -B /usr/lib64/libcxi.so.1 \
+    -B $wd \
+    $sif \
+    bash -eux -c 'echo "$(taskset -p $$) -> $ROCR_VISIBLE_DEVICES" ; \
+    which python ; \
+    python -u train_classifier.py --run-id=line_quality_classifier_eng_Latn \
+                                  --data-path="$(pwd)/../data/train_dev_test/hplt_eng_Latn_linequality" \
+                                  --base-model="FacebookAI/xlm-roberta-large" \
+                                  --learning-rate=0.00004\
+                                  --train'
+
+exit 0
+srun python3 ../src/train_classifier.py --run-id=$run_id \
+                                        --data-path="../data/train_dev_test/hplt_eng_Latn_linequality" \
+                                        --base-model="FacebookAI/xlm-roberta-large" \
+                                        --learning-rate=0.00004 \
+                                        --train 

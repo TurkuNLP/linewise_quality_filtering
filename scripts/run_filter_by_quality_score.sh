@@ -15,22 +15,30 @@ module use /appl/local/csc/modulefiles
 module load pytorch
 
 DATA_DIR="/scratch/project_462000615/ehenriks/FINEWEB/quality_predictions/sample/350BT"
-OUT_DIR="../data/finerweb-350BT-trimmed-threshold-05"
+OUT_DIR="../data/finerweb-350BT-filtered-threshold-05"
+
+#DATA_DIR="../data/fineweb2_fra_line_quality_labelled_split"
+#OUT_DIR="../data/fineweb2_fra_line_quality_labelled_split/tech_filtered"
+
+mkdir -p $OUT_DIR
 
 FILE_PREFIX="$1"
+ORIGINAL_FILE_TYPE=".parquet"
 
 # Create an array of files starting with FILE_PREFIX (filenames only)
 file_array=()
 while IFS= read -r -d '' file; do
     filename="${file##*/}"        # strips path, keeps only filename
     file_array+=("$filename")
-done < <(find "$DATA_DIR" -maxdepth 1 -type f -name "$FILE_PREFIX" -print0)
+done < <(find "$DATA_DIR" -maxdepth 1 -type f -name "${FILE_PREFIX}*" -print0)
+
+echo "Found ${#file_array[@]} files starting with $FILE_PREFIX"
 
 # Process each file
 for i in "${!file_array[@]}"; do
     filename="${file_array[i]}"
     input_path="$DATA_DIR/$filename"
-    filename="${filename%.parquet}"
+    filename="${filename%${ORIGINAL_FILE_TYPE}}"
     output_path="$OUT_DIR/$filename.jsonl"
         
     srun \
@@ -39,7 +47,7 @@ for i in "${!file_array[@]}"; do
         --mem=8G \
         python3 ../src/filter_by_quality_score.py \
         --quality-threshold=0.5 \
-        --trim \
+        --filter \
         --data-path="$input_path" \
         --save-path="$output_path" \
         &

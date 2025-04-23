@@ -3,12 +3,12 @@
 PROCESS_BATCH="./run_classifier_inference_lumi.sh"
 
 FILE_DIR="$1"
-FILES=("$FILE_DIR"/*)
+files=("$FILE_DIR"/*)
 
-echo "Found ${#FILES[@]} files in $FILE_DIR"
+echo "Found ${#files[@]} files in $FILE_DIR"
 
-total_files=${#FILES[@]}
-batch_size=8  # Number of GPUs/files to process in parallel
+total_files=${#files[@]}
+batch_size=8  # Number of files to process in parallel
 
 
 # Calculate number of batches needed
@@ -30,14 +30,14 @@ for ((batch=0; batch<num_batches; batch++)); do
     file_list=""
     echo "Batch $batch would process:"
     for ((i=start; i<=end; i++)); do
-        echo "  - ${files[i]} (would use GPU $((i-start)))"
+        echo "  - ${files[i]}"
         if [ -n "$file_list" ]; then
             file_list="${file_list},"
         fi
         file_list="${file_list}${files[i]}"
     done
 
-    sbatch "$PROCESS_BATCH" "$FILE_DIR" "$file_list"
+    sbatch "$PROCESS_BATCH" "$file_list" "$FILE_DIR"
     echo "Submitted batch $batch (files $start to $end)"
     
 done

@@ -5,7 +5,7 @@ import comet_ml #type:ignore
 import argparse
 from pathlib import Path
 import numpy as np
-from datasets import load_from_disk #type:ignore
+from datasets import load_from_disk,  load_dataset #type:ignore
 from sklearn.metrics import ( #type:ignore
     accuracy_score,
     classification_report,
@@ -94,6 +94,22 @@ def compute_metrics(pred, label_names):
         "recall": recall,
     }
 
+def optimization_config():
+    return {
+    "algorithm": "bayes",
+    "parameters": {
+        "learning_rate": {"type": "float", "scaling_type": "log_uniform", "min": 0.00001, "max": 0.001},
+        "batch_size": {"type": "discrete", "values": [32, 64, 128]},
+    },
+
+    # Declare what to optimize, and how:
+    "spec": {
+      "maxCombo": 20,
+      "metric": "loss",
+      "objective": "minimize",
+    },
+    }
+
 def calculate_class_weights(dataset):
     labels = dataset["train"]["label"]
     unique_labels = np.unique(labels)
@@ -106,19 +122,25 @@ def calculate_class_weights(dataset):
 
 # Main function to run the training process
 def main(args):
+    
+    if args.optimize:
+        opt = comet_ml.Optimizer(config=optimization_config())
 
-    global experiment
-    experiment = comet_ml.start(
-        api_key = os.environ["COMET_API_KEY"],
-        project_name="linewise-quality-filtering"
-    )
-    os.environ["COMET_LOG_ASSETS"] = "True"
+    else:
+        global experiment
+        experiment = comet_ml.start(
+            api_key = os.environ["COMET_API_KEY"],
+            project_name="linewise-quality-filtering"
+        )
+        os.environ["COMET_LOG_ASSETS"] = "True"
 
     # Load data
-    dataset = load_from_disk(args.data_path)
+    # dataset = load_from_disk(args.data_path)
+    dataset = load_dataset('HPLT/HPLT2.0_cleaned', data_files='eng_Latn_1/train-00000-of-00356.parquet')
+    
     
     # Get model path
-    saved_model_path = Path("..") / "results" / "finetuned_models" / str(args.run_id)
+    saved_model_path = Path(".") / "results" / "finetuned_models" / str(args.run_id)
     saved_model_path.mkdir(parents=True, exist_ok=True)
 
     # If training, load the base model; if not, load the saved model
@@ -188,7 +210,7 @@ def main(args):
             gradient_accumulation_steps=2,
             num_train_epochs=4,
             seed=42,
-            fp32=True,
+            fp16=True,
             max_grad_norm=1.0, 
             group_by_length=True,
             report_to=["comet_ml"],
@@ -232,3 +254,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
+

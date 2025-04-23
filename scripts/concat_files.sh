@@ -20,11 +20,12 @@ OUTPUT_FILE="$2"
 
 # Loop through all files in the directory
 for file in "$INPUT_DIR"/*; do
-    # Check if it's a regular file
-    if [[ -f "$file" ]]; then
-        echo "Adding: $file"
-        cat "$file" >> "$OUTPUT_FILE"
-        echo "" >> "$OUTPUT_FILE"
+    if [[ $file = "0"* ]]; then
+        # Check if it's a regular file
+        if [[ -f "$file" ]]; then
+            echo "Adding: $file"
+            cat "$file" >> "$OUTPUT_FILE"
+        fi
     fi
 done
 
