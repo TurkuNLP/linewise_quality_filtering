@@ -135,7 +135,7 @@ def main(args):
         os.environ["COMET_LOG_ASSETS"] = "True"
 
     # Load data
-    dataset = load_from_disk("../data/hplt_fr_linequality")
+    dataset = load_from_disk(Path("..") / "data" / f"hplt_{args.lang_id}_linequality")
     
     # Get model path
     saved_model_path = Path("..") / "results" / "finetuned_models" / str(args.run_id)
@@ -173,10 +173,17 @@ def main(args):
     
     print(f"Example tokenized input: {dataset['train'][0]}") 
     
-    #Calculate class weigths because label distribution is not equal
-    class_weights = calculate_class_weights(dataset)
-    
-    print("Class weights:", class_weights)
+    if args.use_class_weights:
+        class_weights = calculate_class_weights(dataset)
+        print("Class weights:", class_weights)
+    else:
+        class_weights = None
+        print("Not using class weights.")
+        
+    if args.use_label_smoothing:
+        label_smoothing = 0.1
+    else:
+        label_smoothing = None
 
     # Shuffle the train split
     dataset["train"] = dataset["train"].shuffle(seed=42)
@@ -195,21 +202,20 @@ def main(args):
             output_dir=saved_model_path,
             learning_rate=args.learning_rate,
             eval_strategy="steps",
-            eval_steps=200,
+            eval_steps=500,
             save_strategy="steps",
             logging_dir=saved_model_path / "logs",
             logging_steps=100,
-            save_steps=200,
+            save_steps=500,
             save_total_limit=2,
             load_best_model_at_end=True,
             metric_for_best_model="loss",
             per_device_train_batch_size=16,
             per_device_eval_batch_size=16,
             gradient_accumulation_steps=2,
-            num_train_epochs=4,
+            num_train_epochs=2,
             seed=42,
             fp16=True,
-            max_grad_norm=1.0, 
             group_by_length=True,
             report_to=["comet_ml"],
             disable_tqdm=True,
@@ -218,13 +224,13 @@ def main(args):
         trainer = TrainerWithWeightsAndSmoothing(
             model=model,
             args=training_args,
-            train_dataset=dataset["train"].shard(num_shards=5, index=0),
-            eval_dataset=dataset["validation"].shard(num_shards=5, index=0),
+            train_dataset=dataset["train"],
+            eval_dataset=dataset["validation"],
             processing_class=tokenizer,
             compute_metrics=lambda pred: compute_metrics(pred, label_names),
-            callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+            callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
             class_weights=class_weights,
-            label_smoothing=0.1,
+            label_smoothing=label_smoothing,
         )
         
         if args.train:
@@ -245,6 +251,9 @@ if __name__ == "__main__":
     parser.add_argument("--run-id", type=str, required=True)
     parser.add_argument("--base-model", type=str, default="FacebookAI/xlm-roberta-large" )
     parser.add_argument("--learning-rate", type=float, default=0.00001)
+    parser.add_argument("--lang-id", type=str, default="fra_Latn", help="Language id of training data")
+    parser.add_argument("--use-class-weights", action="store_true")
+    parser.add_argument("--use-label-smoothing", action="store_true")
     parser.add_argument("--train", action="store_true")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--optimize", action="store_true")
