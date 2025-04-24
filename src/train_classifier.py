@@ -35,6 +35,7 @@ class TrainerWithWeightsAndSmoothing(Trainer):
         outputs = model(**inputs)
         logits = outputs.get("logits")
         
+        # Print warning if NaNs in logits. If this happens, there is something wrong!
         if torch.isnan(logits).any():
             print("WARNING: NaNs in logits before loss")
   
@@ -150,13 +151,24 @@ def main(args):
         )
 
     dataset = dataset.map(tokenize, batched=True)
+    print(f"Example tokenized input: {dataset['train'][0]}")
     
-    print(f"Example tokenized input: {dataset['train'][0]}") 
-    
-    #Calculate class weigths because label distribution is not equal
-    class_weights = calculate_class_weights(dataset)
-    
-    print("Class weights:", class_weights)
+    # Optionally, use class weights           
+    if args.use_class_weights:
+        #Calculate class weigths because label distribution is not equal
+        class_weights = calculate_class_weights(dataset)
+        print("Class weights:", class_weights)
+    else:
+        class_weights = None
+        print("Not using class weights.")
+
+    # Optionally, use label smoothing
+    if args.use_label_smoothing:
+        label_smoothing = 0.1
+        print("Label smoothing:", label_smoothing)
+    else:
+        label_smoothing = 0.0
+        print("Not using label smoothing")
 
     # Shuffle the train split
     dataset["train"] = dataset["train"].shuffle(seed=42)
@@ -175,11 +187,11 @@ def main(args):
             output_dir=saved_model_path,
             learning_rate=args.learning_rate,
             eval_strategy="steps",
-            eval_steps=200,
+            eval_steps=500,
             save_strategy="steps",
             logging_dir=saved_model_path / "logs",
             logging_steps=100,
-            save_steps=200,
+            save_steps=500,
             save_total_limit=1,
             load_best_model_at_end=True,
             metric_for_best_model="loss",
@@ -188,7 +200,7 @@ def main(args):
             gradient_accumulation_steps=2,
             num_train_epochs=4,
             seed=42,
-            fp32=True,
+            fp16=True,
             max_grad_norm=1.0, 
             group_by_length=True,
             report_to=["comet_ml"],
@@ -204,7 +216,7 @@ def main(args):
             compute_metrics=lambda pred: compute_metrics(pred, label_names),
             callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
             class_weights=class_weights,
-            label_smoothing=0.1,
+            label_smoothing=label_smoothing,
         )
         
         if args.train:
@@ -225,10 +237,11 @@ if __name__ == "__main__":
     parser.add_argument("--run-id", type=str, required=True)
     parser.add_argument("--data-path", type=str, required=True)
     parser.add_argument("--base-model", type=str, default="FacebookAI/xlm-roberta-large" )
-    parser.add_argument("--learning-rate", type=float, default=0.00001)
+    parser.add_argument("--learning-rate", type=float, default=0.00002)
+    parser.add_argument("--use-class-weights", action="store_true")
+    parser.add_argument("--use-label-smoothing", action="store_true")
     parser.add_argument("--train", action="store_true")
     parser.add_argument("--test", action="store_true")
-    parser.add_argument("--optimize", action="store_true")
     args = parser.parse_args()
 
     main(args)
