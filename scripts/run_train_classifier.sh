@@ -10,15 +10,16 @@
 #SBATCH -e ../logs/%j.err
 
 
+module purge
+module use /appl/local/csc/modulefiles
 module load pytorch
+
 source ../.venv/bin/activate
 
-export HF_HOME="../../hf_cache"
-
-run_id="line_quality_classifier_eng_Latn"
+run_id="tur_Latn_classifier"
 
 srun python3 ../src/train_classifier.py --run-id=$run_id \
-                                        --data-path="../data/train_dev_test/hplt_eng_Latn_linequality" \
+                                        --data-path="../data/train_dev_test/hplt_tur_Latn_linequality" \
                                         --base-model="FacebookAI/xlm-roberta-large" \
-                                        --learning-rate=0.00004\
+                                        --learning-rate=0.00002\
                                         --train \

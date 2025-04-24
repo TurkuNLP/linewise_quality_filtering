@@ -11,46 +11,102 @@
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
 
+
+################################################################################
+# Line Quality Classifier - Batch Inference Script
+# Used to run inference on a finetuned line-quality classifier.
+
+# Takes at most 8 files at a time!
+
+# Supports: comma-separated filenames or shell wildcard (e.g. *.jsonl)
+################################################################################
+
+# === Load Required Modules ===
 module purge
 module use /appl/local/csc/modulefiles
 module load pytorch
 
-# activate venv to use sentence_transformers, since it's not part of the pytorch module.
-# If you don't use sentence_transformers, all you need is in the pytorch module.
+# === Activate Python Virtual Environment ===
 source ../.venv/bin/activate
 
+# === Energy Logging (Optional) ===
 gpu-energy --save
 
-DATA_DIR="$2"
-OUT_DIR="../data/fineweb2_fra_line_quality_labelled_split"
+# === Argument Parsing and Validation ===
+# Either change the default values to suit your use case
+# or give appropriate values as command-line arguments
+# If you just want to change language but all other paths are okay,
+# you can just modify the LANG_ID variable
+LANG_ID="fra_Latn"
+DEFAULT_DATA_DIR="../data/fineweb2/fineweb2-${LANG_ID}"
+DEFAULT_OUT_DIR="../data/fineweb2_${LANG_ID}_line_quality_labelled/full"
+DEFAULT_MODEL="../results/finetuned_models/line_quality_classifier_${LANG_ID}"
 
-files="$1"
-# files = "path/to/file1,path/to/file2,path/to/file3"
+# === Parse Keyword-style Arguments ===
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --input) FILES_INPUT="$2"; shift ;;
+        --data-dir) DATA_DIR="$2"; shift ;;
+        --output-dir) OUT_DIR="$2"; shift ;;
+        --model) MODEL="$2"; shift ;;
+        --help)
+            echo "Usage: $0 --input '*.jsonl' --data-dir DIR [--output-dir DIR] [--model PATH]"
+            exit 0 ;;
+        *) echo "❌ Unknown argument: $1"; exit 1 ;;
+    esac
+    shift
+done
 
-# Convert comma-separated list to array
-IFS=',' read -ra file_array <<< "$files"
 
-# Process each file
-for i in "${!file_array[@]}"; do
-    filename="${file_array[i]}"
-    filename=$(basename "$filename") #remove full path
-    input_path="$DATA_DIR/$filename"
-    output_path="$OUT_DIR/$filename"
-    
-    echo "Loading data from $input_path"
-    echo "Saving results to $output_path"
+DATA_DIR="${DATA_DIR:-$DEFAULT_DATA_DIR}"
+OUT_DIR="${OUT_DIR:-$DEFAULT_OUT_DIR}"
+MODEL="${MODEL:-$DEFAULT_MODEL}"
 
+# === Normalize model path to absolute ===
+MODEL=$(realpath "$MODEL")
+if [[ ! -d "$MODEL" ]]; then
+    echo "❌ ERROR: Model path does not exist or is not a directory: $MODEL"
+    exit 1
+fi
+
+
+if [[ -z "$FILES_INPUT" || -z "$DATA_DIR" ]]; then
+    echo "Usage: $0 --input '*.jsonl' --data-dir DIR [--output-dir DIR] [--model PATH]"
+    exit 1
+fi
+
+# === File List Expansion ===
+if [[ "$FILES_INPUT" == *'*'* ]]; then
+    echo "Expanding wildcard pattern: $FILES_INPUT"
+    mapfile -t FILES < <(find "$DATA_DIR" -type f -name "$FILES_INPUT" -exec basename {} \;)
+else
+    IFS=',' read -ra FILES <<< "$FILES_INPUT"
+fi
+
+# === Summary ===
+echo "Starting inference on ${#FILES[@]} files..."
+echo "Input directory: $DATA_DIR"
+echo "Output directory: $OUT_DIR"
+mkdir -p "$OUT_DIR"
+
+# === Inference Loop ===
+for FILE_NAME in "${FILES[@]}"; do
+    BASENAME=$(basename "$FILE_NAME")
+    INPUT_PATH="$DATA_DIR/$BASENAME"
+    OUTPUT_PATH="$OUT_DIR/$BASENAME"
     srun \
         --ntasks=1 \
         --gres=gpu:mi250:1 \
         --mem=20G \
         accelerate launch ../src/classifier_inference.py \
-        --data-path="$input_path" \
-        --save-path="$output_path" \
+        --data-path "$INPUT_PATH" \
+        --save-path "$OUTPUT_PATH" \
+        --model-path "$MODEL" \
         &
-    done
+done
 
-# Wait for all background processes to complete
+# === Wait for All Inference Jobs ===
 wait
 
+# === Show GPU Energy Usage ===
 gpu-energy --diff
