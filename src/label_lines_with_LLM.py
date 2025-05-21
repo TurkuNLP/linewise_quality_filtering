@@ -67,6 +67,19 @@ class LineClassifier:
             gpu_memory_utilization=0.8,
         )
 
+    def classification_labels(self):
+        return [
+            "Clean",
+            "Formatting, Style & Errors",
+            "Bibliographical & Citation References",
+            "Promotional & Spam Content",
+            "Contact & Identification Information",
+            "Navigation & Interface Elements",
+            "Technical Specifications & Metadata",
+            "Legal & Administrative Content",
+            "Offensive or Inappropriate Content",
+        ]
+
     def generate(self, model_input, response_schema):
         sampling_params = SamplingParams(
             temperature=self.temperature,
@@ -339,13 +352,22 @@ class LineClassifier:
                     json_line = json.dumps(doc, ensure_ascii=False)
                     f.write(json_line + "\n")
 
-    def format_results(self, label_lists, batches):
+    def format_results(self, label_lists, batches, valid_labels=None):
         results = []
-        
-        for labels, batch in zip(label_lists, batches):
-            for label, line in zip(labels, batch):
-                dict = {"line": line,
-                        "label": labels[label]}
+    
+        for line_nums_and_labels, batch in zip(label_lists, batches):
+            for line_num, text_line in zip(line_nums_and_labels, batch):
+                label = line_nums_and_labels.get(line_num, "Clean")
+                # In the classification pipeline:
+                # If model has generated an invalid label
+                # we simply default to "Clean".
+                # In the label generation pipeline:
+                # The condition is never met and the if-block
+                # never executed.
+                if valid_labels and label not in valid_labels:
+                    label = "Clean"
+                dict = {"line": text_line,
+                        "label": label}
                 results.append(dict)
                 
         return results
@@ -413,8 +435,11 @@ class LineClassifier:
         # Classify lines according to a fixed label set.
         output = self.generate(model_input, response_schema)
         
+        # Get valid labels to make sure labels are correct
+        valid_labels = self.classification_labels()
+
         # Format results for saving
-        results = self.format_results(output, batches)
+        results = self.format_results(output, batches, valid_labels=valid_labels)
         
         # Save results
         self.save_results(document, results)

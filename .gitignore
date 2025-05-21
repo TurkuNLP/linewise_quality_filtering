@@ -6,6 +6,7 @@ logs/
 cache/
 core
 mlruns/
+models/
 
 
 # Byte-compiled / optimized / DLL files

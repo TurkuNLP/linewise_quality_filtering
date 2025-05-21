@@ -13,18 +13,6 @@ import zstandard as zstd #type:ignore
 import io
 import os
 
-# === Accelerator setup ===
-accelerator = Accelerator()
-device = accelerator.device
-
-# === Load model/tokenizer ===
-
-MODEL_NAME = "../results/finetuned_models/line_quality_classifier_french/checkpoint-20500"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME, torch_dtype=torch.float16)
-label_map = model.config.id2label
-model = accelerator.prepare(model)  # Prepares for multi-GPU
-model.eval()
 
 # === Dataset ===
 class TextDataset(Dataset):
@@ -52,83 +40,50 @@ def accelerate_multi_gpu_inference(texts: List[str], batch_size: int) -> List[in
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        persistent_workers=False,
+        num_workers=0
     )
     dataloader = accelerator.prepare(dataloader)  # Multi-GPU ready
     all_preds = []
 
-    for batch in dataloader:
-        batch = {k: v.to(device) for k, v in batch.items()}
-        with torch.no_grad():
+    # Get class index for label "Clean"
+    class_index_clean = {v: k for k, v in label_map.items()}["Clean"]
+    
+    with torch.no_grad():
+        for batch in dataloader:
+            batch = {k: v.to(device) for k, v in batch.items()}
             outputs = model(**batch)
             logits = outputs.logits
             probs = softmax(logits, dim=-1)
-
-            scores, preds = torch.max(probs, dim=-1)
-
+            preds = torch.argmax(probs, dim=-1)
             gathered_preds = accelerator.gather(preds)
-            gathered_scores = accelerator.gather(scores)
-
-            for pred, score in zip(gathered_preds.cpu().tolist(), gathered_scores.cpu().tolist()):
+            gathered_probs = accelerator.gather(probs)
+            
+            for pred, prob in zip(gathered_preds.cpu().tolist(), gathered_probs.cpu().tolist()):
                 all_preds.append({
                     "label": label_map[pred],
-                    "score": round(score, 3)
-                    })
+                    "clean_score": round(prob[class_index_clean], 3)
+                })
+            
+            # Memory clean up
+            del batch, outputs, logits, probs, preds, gathered_preds, gathered_probs
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
 
     return all_preds
 
-def load_data(language, source):
+def read_zst_files(data_path):
+    def yield_zst():
+        with open(data_path, "rb") as f:
+            dctx = zstd.ZstdDecompressor()
+            stream_reader = dctx.stream_reader(f)
+            text_stream = io.TextIOWrapper(stream_reader, encoding='utf-8',errors='ignore') 
+            for line in text_stream:
+                yield json.loads(line)
 
-    languages = {
-        "english": "eng_Latn",
-        "german": "deu_Latn",
-        "french": "fra_Latn",
-        "italian": "ita_Latn",
-        "portuguese": "por_Latn",
-        "hindi": "hin_Deva",
-        "spanish": "spa_Latn", 
-        "thai": "tha_Thai",
-        }
-    
-    if language.lower() not in languages:
-        raise KeyError(f"{language} is an invalid language option. "
-                    f"Should be one of the following: {list(languages.keys())}")
-    
-    if source == "huggingface":
-        return load_dataset("HPLT/HPLT2.0_cleaned",
-                            name=languages[language.lower()],
-                            split="train",
-                            streaming=True,
-                            )
-    
-    elif source == "local_hplt" or source == "hplt":
-        
-        def read_zst_files(language_code):
-            path = Path("/scratch")/"project_462000353"/"data"/"hplt"/"all_languages"/ language_code
-            files = os.listdir(path)
-            
-            for file in files:
-                if file.endswith(".zst"):
-                    with open(path / file, "rb") as f:
-                        dctx = zstd.ZstdDecompressor()
-                        stream_reader = dctx.stream_reader(f)
-                        text_stream = io.TextIOWrapper(stream_reader, encoding='utf-8',errors='ignore') 
-                        for line in text_stream:
-                            yield json.loads(line)
-
-        return IterableDataset.from_generator(lambda: read_zst_files(languages[language.lower()]))
-    
-    elif source == "local_fineweb" or source == "fineweb":
-        def yield_jsonl():
-            path = Path("/scratch")/"project_462000615"/"vitiugin"/"data"/"fineweb2_fra"
-            for file in path.iterdir():
-                with open(file, "r") as f:
-                    for line in f:
-                        if line.strip():  # Skip empty lines
-                            yield json.loads(line)
-
-        return IterableDataset.from_generator(lambda: yield_jsonl())
-    
+    return IterableDataset.from_generator(lambda: yield_zst())
 
 def read_jsonl(data_path):
     def yield_jsonl():
@@ -159,7 +114,7 @@ def process_batch(docs):
     
     # Extract labels and scores with line idx
     labels_with_idx = [(tup[0], pred["label"]) for tup, pred in zip(all_lines_with_idx, predictions)]
-    scores_with_idx = [(tup[0], round(pred["score"], 3)) for tup, pred in zip(all_lines_with_idx, predictions)]
+    scores_with_idx = [(tup[0], pred["clean_score"]) for tup, pred in zip(all_lines_with_idx, predictions)]
     
     # Sort back into original order
     labels_with_idx.sort(key=lambda x: x[0])
@@ -178,9 +133,10 @@ def process_batch(docs):
             "text": docs[idx]["text"],
             "id": docs[idx]["id"],
             "line_quality_labels": labels[start_index:end_index],
-            "line_quality_label_scores": scores[start_index:end_index]
+            "quality_score": scores[start_index:end_index]
         }
-        assert len(d["text"].split("\n")) == len(d["line_quality_labels"]) == len(d["line_quality_label_scores"])
+        # Ensure the lines, labels and scores match
+        assert len(d["text"].split("\n")) == len(d["line_quality_labels"]) == len(d["quality_score"])
         results.append(d)
         start_index += num_lines
 
@@ -205,15 +161,21 @@ def file_exists_and_line_count(path):
 # === Example ===
 def main(args):
     #data = load_data(args.language, source=args.data_source)
-    print(f"Loading data from {args.data_path}")
-    data = read_jsonl(args.data_path)
+    print(f"Loading data from {args.data_path}", flush=True)
+    if args.data_path.endswith(".jsonl"):
+        data = read_jsonl(args.data_path)
+    elif args.data_path.endswith(".zst"):
+        print("Data is compressed with zstandard. Decompressing...", flush=True)
+        data = read_zst_files(args.data_path)
+    else:
+        raise ValueError(f"Unsupported file format: {args.data_path}.")
     exists, lines = file_exists_and_line_count(args.save_path)
     if exists:
         print(f"File {args.save_path} already exists with {lines} lines. "
-              f"Starting from line {lines}.")
+              f"Starting from line {lines}.", flush=True)
         start_index = lines
     else:
-        print(f"File {args.save_path} does not exist. Starting from line 0.")
+        print(f"File {args.save_path} does not exist. Starting from line 0.", flush=True)
         start_index = 0
     docs = []
     batch_num = 0
@@ -241,7 +203,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model-path",
         type=str,
-        default="../results/finetuned_models/XLMR_full_2/checkpoint-20500",
+        required=True,
         help="Path to finetuned model.",
     )
     parser.add_argument(
@@ -258,7 +220,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--doc-batch-size",
         type=int,
-        default=256,
+        default=128,
         help="Number of documents to process at once."
     )
     parser.add_argument(
@@ -279,5 +241,22 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     
+    # === Accelerator setup ===
+    accelerator = Accelerator()
+    device = accelerator.device
+
+    # === Load model/tokenizer ===
+
+    MODEL_NAME = args.model_path
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        MODEL_NAME,
+        torch_dtype=torch.float16,
+        local_files_only=True,
+        )
+    label_map = model.config.id2label
+    model = accelerator.prepare(model)  # Prepares for multi-GPU
+    model.eval()
+
     main(args)
 

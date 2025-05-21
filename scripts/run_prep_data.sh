@@ -2,7 +2,7 @@
 #SBATCH --job-name=data_preprocessing
 #SBATCH --account=project_462000353
 #SBATCH --partition=debug
-#SBATCH --time=00:29:00
+#SBATCH --time=00:15:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=10
@@ -14,7 +14,7 @@ module purge
 module use /appl/local/csc/modulefiles
 module load pytorch
 
-LANG_CODE="tur_Latn"
+LANG_CODE="spa_Latn"
 
 DATA_PATH="../results/LLM_labelled_data/hplt_${LANG_CODE}/results_hplt_${LANG_CODE}.jsonl"
 SAVE_PATH="../data/train_dev_test/hplt_${LANG_CODE}_linequality"

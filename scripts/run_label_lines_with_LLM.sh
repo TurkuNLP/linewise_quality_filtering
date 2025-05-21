@@ -35,7 +35,7 @@ srun python3 ../src/label_lines_with_LLM.py --run-id=$run_id \
                                             --batch-size=10 \
                                             --max-vocab=50 \
                                             --synonym-threshold=0.3 \
-                                            --start-index=13844 \
+                                            --start-index=0 \
                                             --stop-index=40000 \
                                             --language="german" \
                                             --use-fixed-labels

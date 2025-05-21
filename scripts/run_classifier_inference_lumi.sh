@@ -2,7 +2,7 @@
 #SBATCH --job-name=classifier_inference
 #SBATCH --account=project_462000353
 #SBATCH --partition=standard-g
-#SBATCH --time=23:50:00
+#SBATCH --time=2-00:0:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --cpus-per-task=4
@@ -37,10 +37,9 @@ gpu-energy --save
 # or give appropriate values as command-line arguments
 # If you just want to change language but all other paths are okay,
 # you can just modify the LANG_ID variable
-LANG_ID="fra_Latn"
-DEFAULT_DATA_DIR="../data/fineweb2/fineweb2-${LANG_ID}"
-DEFAULT_OUT_DIR="../data/fineweb2_${LANG_ID}_line_quality_labelled/full"
-DEFAULT_MODEL="../results/finetuned_models/line_quality_classifier_${LANG_ID}"
+LANG_ID="spa_Latn"
+DEFAULT_OUT_DIR="../data/hplt/line_quality_labelled/${LANG_ID}/full"
+DEFAULT_MODEL="../models/line_quality_classifier_${LANG_ID}"
 
 # === Parse Keyword-style Arguments ===
 while [[ "$#" -gt 0 ]]; do
@@ -57,8 +56,6 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-
-DATA_DIR="${DATA_DIR:-$DEFAULT_DATA_DIR}"
 OUT_DIR="${OUT_DIR:-$DEFAULT_OUT_DIR}"
 MODEL="${MODEL:-$DEFAULT_MODEL}"
 
@@ -89,15 +86,20 @@ echo "Input directory: $DATA_DIR"
 echo "Output directory: $OUT_DIR"
 mkdir -p "$OUT_DIR"
 
+# Change these values to suit your needs
+ntasks=1
+gres=gpu:mi250:1
+mem=20G
+
 # === Inference Loop ===
 for FILE_NAME in "${FILES[@]}"; do
     BASENAME=$(basename "$FILE_NAME")
     INPUT_PATH="$DATA_DIR/$BASENAME"
     OUTPUT_PATH="$OUT_DIR/$BASENAME"
     srun \
-        --ntasks=1 \
-        --gres=gpu:mi250:1 \
-        --mem=20G \
+        --ntasks=$ntasks \
+        --gres=$gres \
+        --mem=$mem \
         accelerate launch ../src/classifier_inference.py \
         --data-path "$INPUT_PATH" \
         --save-path "$OUTPUT_PATH" \

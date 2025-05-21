@@ -14,17 +14,33 @@ def read_data(path):
     return data
 
 
-def create_dataframe(data):
+def create_dataframe(data, fix_labels=True):
     texts, labels = [], []
     for document in data:
         for line in document["content"]:
             texts.append(line["line"])
+            if fix_labels:
+                # Replace invalid labels with "Clean"
+                if line["label"] not in valid_labels():
+                    line["label"] = "Clean"
             labels.append(line["label"])
     df = pd.DataFrame()
     df["text"] = texts
     df["label"] = labels
     return df
 
+def valid_labels():
+    return [
+        "Clean",
+        "Formatting, Style & Errors",
+        "Bibliographical & Citation References",
+        "Promotional & Spam Content",
+        "Contact & Identification Information",
+        "Navigation & Interface Elements",
+        "Technical Specifications & Metadata",
+        "Legal & Administrative Content",
+        "Offensive or Inappropriate Content",
+    ]
 
 def stratified_split_and_encode(
     df: pd.DataFrame,
@@ -97,7 +113,7 @@ def downsample(df, downsampling_fraction):
 
 def main(args):
     data = read_data(args.data_path)
-    df = create_dataframe(data)
+    df = create_dataframe(data, fix_labels=True)
     if args.downsample_clean < 1:
         print("Label distribution before downsampling Clean:")
         print(df["label"].value_counts())

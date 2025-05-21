@@ -6,10 +6,6 @@ import ast
 import os
 
 def load_data(path):
-    #return load_dataset(
-    #    "TurkuNLP/finerweb-10bt",
-    #    split="train",
-    #    streaming=True)
     dataset = load_dataset(
         "json",
         data_files= {"train": path},
@@ -21,39 +17,39 @@ def load_data(path):
 def filter_row(row, idx_to_keep):
     text_lines = row["text"].splitlines()
     quality_labels = row["line_quality_labels"]
-    quality_label_scores = row["line_quality_label_scores"]
+    quality_scores = row["quality_score"]
     
-    assert len(text_lines) == len(quality_labels) == len(quality_label_scores)
+    assert len(text_lines) == len(quality_labels) == len(quality_scores)
     
     filtered_lines = [text_lines[i] for i in idx_to_keep]
     row["text"] = "\n".join(filtered_lines)
     row["line_quality_labels"] = [quality_labels[i] for i in idx_to_keep]
-    row["line_quality_label_scores"] = [quality_label_scores[i] for i in idx_to_keep]
+    row["quality_score"] = [quality_scores[i] for i in idx_to_keep]
     
     return row
 
 def trim_row(row, start, end):
     text_lines = row['text'].splitlines()
     quality_labels = row['line_quality_labels']
-    quality_label_scores = row["line_quality_label_scores"]
+    quality_scores = row["quality_score"]
     # Slice only the retained portion
     if start <= end:
         trimmed_lines = text_lines[start:end+1]
         trimmed_quality_labels = quality_labels[start:end+1]
-        trimmed_quality_label_scores = quality_label_scores[start:end+1]
+        trimmed_quality_scores = quality_scores[start:end+1]
     else:
         trimmed_lines = []  # all lines are low quality
         trimmed_quality_labels = []
-        trimmed_quality_label_scores = []
+        trimmed_quality_scores = []
     
-    row['text'] = "\n".join(trimmed_lines)
-    row['line_quality_labels'] = trimmed_quality_labels
-    row["line_quality_label_scores"] = trimmed_quality_label_scores
+    row["text"] = "\n".join(trimmed_lines)
+    row["line_quality_labels"] = trimmed_quality_labels
+    row["quality_score"] = trimmed_quality_scores
     
     return row
 
 def remove_lines(row, labels_to_remove, filter=False, trim=False):
-    quality_labels = row['line_quality_labels']
+    quality_labels = row["line_quality_labels"]
     
     if isinstance(labels_to_remove, str):
         labels_to_remove = [labels_to_remove]
@@ -137,7 +133,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--quality-labels", type=str, required=True,
+        "--quality-labels", type=str, required=True, help="Name of labels to be removed."
         )
     parser.add_argument(
         "--filter", action="store_true", help="Filter out all lines that fall below quality threshold"

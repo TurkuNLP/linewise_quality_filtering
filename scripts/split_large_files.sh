@@ -2,10 +2,10 @@
 #SBATCH --job-name=split_files
 #SBATCH --account=project_462000353
 #SBATCH --partition=small
-#SBATCH --time=00:20:00
+#SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=20
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=40G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
@@ -15,9 +15,12 @@
 # The resulting files are saved in $OUTPUT_DIR
 # Run this script by calling sbatch split_large_files.sh
 
-FILE_DIR="/scratch/project_462000615/vitiugin/data/fineweb_tur"
-OUTPUT_DIR="/scratch/project_462000353/tarkkaot/linewise_quality_filtering/data/fineweb2/fineweb2-tur_Latn"
-SPLIT_COUNT=30
+set -euo pipefail 
+
+#FILE_DIR="/scratch/project_462000615/vitiugin/data/hplt2c/tur_Latn"
+FILE_DIR="/scratch/project_462000353/tarkkaot/linewise_quality_filtering/data/hplt/eng_Latn_small_sample"
+OUTPUT_DIR="/scratch/project_462000353/tarkkaot/linewise_quality_filtering/data/hplt/eng_Latn_small_sample/split"
+SPLIT_COUNT=10
 
 mkdir -p "$OUTPUT_DIR"
 

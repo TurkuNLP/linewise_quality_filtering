@@ -4,7 +4,7 @@
 #SBATCH --partition=small
 #SBATCH --time=00:30:00
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=30
+#SBATCH --ntasks-per-node=10
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=240G
 #SBATCH -o ../logs/%j.out
@@ -22,13 +22,13 @@ module load pytorch
 # Below, in the srun command, choose cleaning strategy: either trim or filter.
 # Give names of labels to be removed. See valid labels from the main python script.
 
-# Run this script by calling sbatch run_filter_by_quality_labels.sh <file_prefix>
+# Running: sbatch run_filter_by_quality_labels.sh <file_prefix>
 # File prefix is the start of a bunch of files that will be processed at once, e.g. 00000_
 # At most, 30 files can be processed at once with this script.
 
-
-DATA_DIR="../data/fineweb2_tur_Latn_line_quality_labelled/full"
-OUT_DIR="../data/fineweb2_tur_Latn_line_quality_labelled/just_clean_trimmed"
+LANG_ID="spa_Latn"
+DATA_DIR="../data/fineweb2_${LANG_ID}_line_quality_labelled/full"
+OUT_DIR="../data/fineweb2_${LANG_ID}_line_quality_labelled/just_clean_trimmed"
 
 mkdir -p $OUT_DIR
 
