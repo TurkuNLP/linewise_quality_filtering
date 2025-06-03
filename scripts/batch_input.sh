@@ -6,7 +6,7 @@
 # Usage: bash batch_input path/to/file/dir
 
 # Where to pass the batch to
-PROCESS_BATCH="./run_classifier_inference_lumi.sh"
+PROCESS_BATCH="./run_classifier_inference_new.sh"
 
 # Size of batch. Make sure the receiving script can handle the batch size
 batch_size=8

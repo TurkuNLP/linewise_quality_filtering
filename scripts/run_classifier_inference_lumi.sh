@@ -2,7 +2,7 @@
 #SBATCH --job-name=classifier_inference
 #SBATCH --account=project_462000353
 #SBATCH --partition=standard-g
-#SBATCH --time=2-00:0:00
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --cpus-per-task=4
@@ -28,6 +28,13 @@ module load pytorch
 
 # === Activate Python Virtual Environment ===
 source ../.venv/bin/activate
+
+python - <<'PY'
+import torch, os
+print("ROCR_VISIBLE_DEVICES =", os.getenv("ROCR_VISIBLE_DEVICES"))
+print("torch.cuda.is_available() =", torch.cuda.is_available())
+print("device count =", torch.cuda.device_count())
+PY
 
 # === Energy Logging (Optional) ===
 gpu-energy --save
@@ -93,14 +100,14 @@ mem=20G
 
 # === Inference Loop ===
 for FILE_NAME in "${FILES[@]}"; do
+
     BASENAME=$(basename "$FILE_NAME")
     INPUT_PATH="$DATA_DIR/$BASENAME"
     OUTPUT_PATH="$OUT_DIR/$BASENAME"
-    srun \
-        --ntasks=$ntasks \
+    srun --ntasks=$ntasks \
         --gres=$gres \
         --mem=$mem \
-        accelerate launch ../src/classifier_inference.py \
+        accelerate launch ../src/classifier_inference_new.py \
         --data-path "$INPUT_PATH" \
         --save-path "$OUTPUT_PATH" \
         --model-path "$MODEL" \

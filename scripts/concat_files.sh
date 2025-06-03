@@ -10,23 +10,8 @@
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
 
-# Directory containing the files
-INPUT_DIR="$1"
-# Output file
-OUTPUT_FILE="$2"
+LANG_ID="deu_Latn"
 
-# Create or empty the output file
-> "$OUTPUT_FILE"
-
-# Loop through all files in the directory
-for file in "$INPUT_DIR"/*; do
-    if [[ $file = "0"* ]]; then
-        # Check if it's a regular file
-        if [[ -f "$file" ]]; then
-            echo "Adding: $file"
-            cat "$file" >> "$OUTPUT_FILE"
-        fi
-    fi
-done
-
-echo "All files concatenated into $OUTPUT_FILE"
+srun python3 ../src/concat_jsonl.py \
+    --input-dir="../data/hplt/line_quality_labelled/${LANG_ID}/just_clean_trimmed" \
+    --output="../data/hplt/line_quality_labelled/${LANG_ID}/just_clean_trimmed/concatenated/${LANG_ID}_just_clean_trimmed.jsonl" \
