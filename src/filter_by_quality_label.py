@@ -17,21 +17,21 @@ def load_data(path):
 def filter_row(row, idx_to_keep):
     text_lines = row["text"].splitlines()
     quality_labels = row["line_quality_labels"]
-    quality_scores = row["quality_score"]
+    quality_scores = row["quality_scores"]
     
     assert len(text_lines) == len(quality_labels) == len(quality_scores)
     
     filtered_lines = [text_lines[i] for i in idx_to_keep]
     row["text"] = "\n".join(filtered_lines)
     row["line_quality_labels"] = [quality_labels[i] for i in idx_to_keep]
-    row["quality_score"] = [quality_scores[i] for i in idx_to_keep]
+    row["quality_scores"] = [quality_scores[i] for i in idx_to_keep]
     
     return row
 
 def trim_row(row, start, end):
     text_lines = row['text'].splitlines()
     quality_labels = row['line_quality_labels']
-    quality_scores = row["quality_score"]
+    quality_scores = row["quality_scores"]
     # Slice only the retained portion
     if start <= end:
         trimmed_lines = text_lines[start:end+1]
@@ -44,7 +44,7 @@ def trim_row(row, start, end):
     
     row["text"] = "\n".join(trimmed_lines)
     row["line_quality_labels"] = trimmed_quality_labels
-    row["quality_score"] = trimmed_quality_scores
+    row["quality_scores"] = trimmed_quality_scores
     
     return row
 

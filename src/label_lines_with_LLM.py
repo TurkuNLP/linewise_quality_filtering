@@ -103,6 +103,9 @@ class LineClassifier:
         self, input_lines=None, vocab=None, group_name=None, synonyms=None, task=None
     ):
         """Format input lines."""
+        
+        # Get language from the language code
+        language = self.code_to_language()
 
         if task == "generate_labels" or task == "classify":
             formatted_lines = ""
@@ -110,14 +113,14 @@ class LineClassifier:
                 formatted_lines += f"Line {i+1}: {line}\n------\n"
 
             if task == "classify":
-                prompt = prompts.classify(formatted_lines, self.language)
+                prompt = prompts.classify(formatted_lines, language)
                 return prompt
             
             if not vocab:
                 vocab = (
                     "The list is currently empty. You are free to create new labels."
                 )
-            prompt = prompts.generate_labels(formatted_lines, vocab, self.language)
+            prompt = prompts.generate_labels(formatted_lines, vocab, language)
             return prompt
         
         elif task == "synonyms":
@@ -172,26 +175,9 @@ class LineClassifier:
         }
         return GuidedDecodingParams(json=RootModel[schema_map[task]].model_json_schema())
 
-    def load_data(self):
-        languages = {
-            "english": "eng_Latn",
-            "german": "deu_Latn",
-            "french": "fra_Latn",
-            "italian": "ita_Latn",
-            "portuguese": "por_Latn",
-            "hindi": "hin_Deva",
-            "spanish": "spa_Latn", 
-            "thai": "tha_Thai",
-            "finnish": "fin_Latn",
-            "turkish": "tur_Latn",
-            }
-        
-        if self.language.lower() not in languages:
-            raise KeyError(f"{self.language} is an invalid language option. "
-                           f"Should be one of the following: {list(languages.keys())}")
-        
+    def load_data(self):        
         return load_dataset("HPLT/HPLT2.0_cleaned",
-                            name=languages[self.language.lower()],
+                            name=self.language,
                             split="train",
                             streaming=True,
                             cache_dir=self.cache_dir
@@ -392,6 +378,55 @@ class LineClassifier:
             for item in self.label_counts.most_common():
                 f.write(f"{item[0]}\t{item[1]}\n")
                 
+    def code_to_language(self):
+        language_dict = {
+            # EU Official Languages
+            "Bulgarian": ["bul_Cyrl"],
+            "Czech": ["ces_Latn"],
+            "Danish": ["dan_Latn"],
+            "German": ["deu_Latn"],
+            "Greek": ["ell_Grek"],
+            "English": ["eng_Latn"],
+            "Estonian": ["est_Latn", "ekk_Latn"],
+            "Finnish": ["fin_Latn"],
+            "French": ["fra_Latn"],
+            "Irish": ["gle_Latn"],
+            "Croatian": ["hrv_Latn"],
+            "Hungarian": ["hun_Latn"],
+            "Italian": ["ita_Latn"],
+            "Latvian": ["lav_Latn", "ltg_Latn", "lvs_Latn"],
+            "Lithuanian": ["lit_Latn"],
+            "Maltese": ["mlt_Latn"],
+            "Dutch": ["nld_Latn"],
+            "Polish": ["pol_Latn"],
+            "Portuguese": ["por_Latn"],
+            "Romanian": ["ron_Latn"],
+            "Slovak": ["slk_Latn"],
+            "Slovene": ["slv_Latn"],
+            "Spanish": ["spa_Latn"],
+            "Swedish": ["swe_Latn"],
+            # Candidate EU Members
+            "Bosnian": ["bos_Latn"],
+            "Catalan": ["cat_Latn"],
+            "Basque": ["eus_Latn"],
+            "Galician": ["glg_Latn"],
+            "Icelandic": ["isl_Latn"],
+            "Georgian": ["kat_Geor"],
+            "Macedonian": ["mkd_Cyrl"],
+            "Albanian": ["sqi_Latn", "als_Latn"],
+            "Serbian": ["srp_Cyrl", "srp_Latn"],
+            "Turkish": ["tur_Latn"],
+            "Ukrainian": ["ukr_Cyrl"],
+            # Closely Associated Scandinavian
+            "Norwegian": ["nno_Latn", "nob_Latn"],
+        }
+        
+        for lang, codes in language_dict.items():
+            if self.language in codes:
+                return lang
+            
+        raise ValueError(f"Language code {self.language} is not a valid language.")
+
     def label_generation_pipeline(self, document):
         """This pipeline is used when the argument use_fixed labels is not given.
         This pipeline will let the LLM generate labels to lines freely, inventing new labels
@@ -528,8 +563,8 @@ def main():
     parser.add_argument(
         "--language",
         type=str,
-        default="english",
-        help="Language of data."
+        default="eng_Latn",
+        help="Language code for wanted data, eg. eng_Latn, spa_Latn."
     )
     parser.add_argument(
         "--use-fixed-labels",
