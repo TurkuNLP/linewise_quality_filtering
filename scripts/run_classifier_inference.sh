@@ -8,7 +8,7 @@
 #SBATCH --mem=20G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
-#SBATCH --array=1-20
+#SBATCH --array=1
 
 ####gpu-energy --save
 
@@ -26,17 +26,38 @@ echo "ROCR visible devices: " $ROCR_VISIBLE_DEVICES
 
 LANG_ID="$1"
 BASEDIR="${SLURM_SUBMIT_DIR}"
-DATA_DIR="${BASEDIR}/../data/hplt/${LANG_ID}"
-OUT_DIR="${BASEDIR}/../data/hplt/line_quality_labelled/${LANG_ID}/full"
+DATA_DIR="${BASEDIR}/../data/hplt_dedup/${LANG_ID}"
+OUT_DIR="${BASEDIR}/../data/hplt_dedup_salvaged/${LANG_ID}/full"
 MODEL="${BASEDIR}/../models/line_quality_classifier_${LANG_ID}"
+
+echo "================================"
+echo "Reading data from $DATA_DIR"
+echo "Results will be saved in $OUT_DIR"
+echo "Using model stored at $MODEL"
+echo "================================"
 
 mkdir -p "$OUT_DIR"
 
-# Get the list of .jsonl files into an array
-mapfile -t FILES < <(find "$DATA_DIR" -maxdepth 1 -name '*.jsonl' | sort)
+# Get the list of both .jsonl and .jsonl.zst files into an array
+mapfile -t FILES < <(find "$DATA_DIR" -maxdepth 1 \( -name '*.jsonl' -o -name '*.jsonl.zst' \) | sort)
 
-# Select files using the array task ID
-INPUT_FILE="${FILES[$SLURM_ARRAY_TASK_ID]}"
+# Debug: show files found
+echo "Found ${#FILES[@]} files:"
+for f in "${FILES[@]}"; do
+    echo "  - $f"
+done
+
+# Adjust index for 0-based arrays (SLURM is 1-based, bash arrays are 0-based)
+ARRAY_INDEX=$((SLURM_ARRAY_TASK_ID - 1))
+
+# Verify we have a valid index
+if [ "$ARRAY_INDEX" -lt 0 ] || [ "$ARRAY_INDEX" -ge "${#FILES[@]}" ]; then
+    echo "Error: ARRAY_INDEX ($ARRAY_INDEX) is out of range. Only ${#FILES[@]} files found."
+    exit 1
+fi
+
+# Select files using the array task ID (adjusted for 0-based indexing)
+INPUT_FILE="${FILES[$ARRAY_INDEX]}"
 BASENAME=$(basename "$INPUT_FILE")
 
 echo "Processing file: $INPUT_FILE"
