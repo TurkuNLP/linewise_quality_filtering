@@ -2,7 +2,7 @@
 #SBATCH --job-name=label_lines_with_LLM
 #SBATCH --account=project_462000353
 #SBATCH --partition=standard-g
-#SBATCH --time=12:00:00
+#SBATCH --time=23:55:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=15
@@ -15,10 +15,10 @@
 # Load pytorch module
 module purge
 module use /appl/local/csc/modulefiles
-module load pytorch
+module load pytorch/2.5
 
 # Activate venv
-source ../.venv/bin/activate
+source ../.venv_pt2.5/bin/activate
 
 # Check if you are logged in to HuggingFace
 echo "HuggingFace username:"
