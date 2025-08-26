@@ -60,9 +60,9 @@ Lines not classified as "Clean" need a specific and descriptive label. Examples 
 
 **Example Input:**
 
-Line 1: Welcome to our website!
+Line 1: In this blog post, I'll be tellin you about my trip to Europe!
 ------
-Line 2: Contact us at support@example.com.
+Line 2: If you have any questions, you can always contact me at myblog@example.com.
 ------
 Line 3: ***** $$$$$
 ------
