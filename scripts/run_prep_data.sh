@@ -14,9 +14,9 @@ module purge
 module use /appl/local/csc/modulefiles
 module load pytorch
 
-LANG_CODE="fin_Latn"
+LANG_CODE="eus_Latn"
 
-DATA_PATH="../results/LLM_labelled_data/hplt_${LANG_CODE}/results_hplt_${LANG_CODE}.jsonl"
+DATA_PATH="../results/LLM_labelled_data/hplt_${LANG_CODE}_all/results_hplt_${LANG_CODE}.jsonl"
 SAVE_PATH="../data/train_dev_test/hplt_${LANG_CODE}_linequality"
 
 srun python3 ../src/prep_data_for_training.py --data-path=$DATA_PATH --save-path=$SAVE_PATH
