@@ -119,7 +119,7 @@ def main(args):
     dataset = load_from_disk(args.data_path)
     
     # Get model path
-    saved_model_path = Path("..") / "results" / "finetuned_models" / str(args.run_id)
+    saved_model_path = Path("..") / "models" / str(args.run_id)
     saved_model_path.mkdir(parents=True, exist_ok=True)
 
     # If training, load the base model; if not, load the saved model
