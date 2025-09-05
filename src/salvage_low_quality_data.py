@@ -25,11 +25,19 @@ def read_zst_files(data_path):
 
     return IterableDataset.from_generator(lambda: yield_zst())
 
+def read_jsonl_files(data_path):
+    def yield_jsonl():
+        with open(data_path, "r", encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                yield json.loads(line)
+
+    return IterableDataset.from_generator(lambda: yield_jsonl())
+
 def classify_lines(docs, tokenizer, model, line_batch_size):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
     # Create list of lists, where each list is lines in doc
-    lines = [doc["text"].splitlines() for doc in docs]
+    lines = [doc["text"].split("\n") for doc in docs]
     # Keep track of how many lines each doc contains
     num_lines_in_each_doc = [len(doc) for doc in lines]
     # Flatten nested list
@@ -106,10 +114,9 @@ def classify_lines(docs, tokenizer, model, line_batch_size):
             "document_lang": docs[idx]["lang"][np.argmax(docs[idx]["prob"])],
             "line_quality_labels": labels[start_index:end_index],
             "quality_scores": scores[start_index:end_index],
-
         }
 
-        assert len(d["text"].splitlines()) == len(d["line_quality_labels"]) == len(d["quality_scores"])
+        assert len(d["text"].split("\n")) == len(d["line_quality_labels"]) == len(d["quality_scores"])
         results.append(d)
         start_index += num_lines
 
@@ -131,7 +138,7 @@ def file_exists_and_line_count(path):
     return True, line_count
 
 def filter_row(row, idx_to_keep):
-    text_lines = row["text"].splitlines()
+    text_lines = row["text"].split("\n")
     quality_labels = row["line_quality_labels"]
     quality_scores = row["quality_scores"]
     line_langs = row["langs"]
@@ -147,7 +154,7 @@ def filter_row(row, idx_to_keep):
     return row
 
 def trim_row(row, start, end):
-    text_lines = row['text'].splitlines()
+    text_lines = row['text'].split("\n")
     quality_labels = row['line_quality_labels']
     quality_scores = row["quality_scores"]
     # Slice only the retained portion
@@ -199,9 +206,12 @@ def remove_lines(row, filter=False, trim=False):
         raise ValueError("Must choose either 'trim' or 'filter'")
     
 def process_batch(args, docs, batch_num, tokenizer, model):
-    # Label line qualities with classifier
-    classified = classify_lines(docs, tokenizer, model, args.line_batch_size)
-    
+    if tokenizer and model:
+        classified = classify_lines(docs, tokenizer, model, args.line_batch_size)
+    else:
+        # Skip classification. Data should be classified and contain the field "line_quality_labels" and "quality_scores"
+        classified = docs
+
     # Trim or filter documents
     filtered = [remove_lines(doc, filter=args.filter, trim=args.trim) for doc in classified]
 
@@ -213,8 +223,11 @@ def process_batch(args, docs, batch_num, tokenizer, model):
     print(f"Salvaged {len(processed)} documents", flush=True)
 
 def main(args, tokenizer, model):
-    data = read_zst_files(args.data_path)
-    
+    if args.data_path.endswith(".zst"):
+        data = read_zst_files(args.data_path)
+    elif args.data_path.endswith(".jsonl"):
+        data = read_jsonl_files(args.data_path)
+
     exists, lines = file_exists_and_line_count(args.save_path)
     if exists:
         print(f"File {args.save_path} already exists with {lines} lines. "
@@ -238,7 +251,7 @@ def main(args, tokenizer, model):
             docs = []
             batch_num += 1
             end = time.time()
-            print(f"Processing {args.doc_batch_size} took {end - start:.2f} seconds.", flush=True)
+            print(f"Processing {args.doc_batch_size} docs took {end - start:.2f} seconds.", flush=True)
             start = time.time()
             
     # Process any remaining documents
@@ -247,12 +260,13 @@ def main(args, tokenizer, model):
         docs = []
         batch_num += 1
         end = time.time()
-        print(f"Processing {args.doc_batch_size} took {end - start:.2f} seconds.", flush=True)
+        print(f"Processing {args.doc_batch_size} docs took {end - start:.2f} seconds.", flush=True)
 
         
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="A script for labelling line quality with finetuned classifier.")
-    parser.add_argument("--model-path", type=str, required=True) # Path to classifier
+    parser = argparse.ArgumentParser(description="A script for filtering low-quality segments.")
+    parser.add_argument("--model-path", type=str, default=None) # Path to classifier, if needed
+    parser.add_argument("--classify", action="store_true") # Give this argument, if the data is not classified yet
     parser.add_argument("--data-path", type=str, required=True) # Path to data (jsonl or jsonl.zst)
     parser.add_argument("--save-path", type=str, required=True) # Path to where results are saved
     parser.add_argument("--doc-batch-size", type=int, default=128) # How many documents are processed at once
@@ -261,17 +275,34 @@ if __name__ == "__main__":
     parser.add_argument("--trim", action="store_true") # Trim: remove unclean lines from beginning and end until Clean line is encountered
     parser.add_argument("--filter", action="store_true") # Filter: remove all unclean lines
     args = parser.parse_args()
-    
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    model = AutoModelForSequenceClassification.from_pretrained(args.model_path,
-                                                               torch_dtype=torch.float16,
-                                                               device_map="auto",
-                                                               local_files_only=True
-                                                               )
-    model.half()
-    model.eval()
-    
-    print(f"{torch.cuda.device_count()} GPUs available.", flush=True)
-    print("Model on device:", model.device, flush=True)
+
+    if args.classify:
+        if not args.model_path:
+            raise ValueError("Model path must be provided for classification.")
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+        model = AutoModelForSequenceClassification.from_pretrained(args.model_path,
+                                                                torch_dtype=torch.float16,
+                                                                device_map="auto",
+                                                                local_files_only=True
+                                                                )
+        model.half()
+        model.eval()
         
+        print(f"{torch.cuda.device_count()} GPUs available.", flush=True)
+        print("Model on device:", model.device, flush=True)
+        
+    if not args.classify:
+        tokenizer = None
+        model = None
+        print("Skipping classification. Assuming that data is pre-classified "
+              "and contains the fields 'line_quality_labels' and 'quality_scores'. "
+              "Use --classify to enable classification.",
+              flush=True)
+        if args.model_path:
+            print("Ignoring provided model path since --classify is not given.", flush=True)
+        if torch.cuda.is_available():
+            print("GPU available but not used. You should only reserve GPUs when --classify is given.", flush=True)
+
     main(args, tokenizer, model)
+    
+    print("Done.", flush=True)
