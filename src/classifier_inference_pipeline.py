@@ -108,8 +108,14 @@ def process_batch(docs, tokenizer, model, line_batch_size):
         d = {
             "text": docs[idx]["text"],
             "id": docs[idx]["id"],
+            "langs": docs[idx]["seg_langs"],
+            "robotstxt": docs[idx]["robotstxt"],
+            "collection": docs[idx]["collection"],
+            "url": docs[idx]["u"],
+            "document_lang": docs[idx]["lang"][np.argmax(docs[idx]["prob"])],
+            "doc_scores": docs[idx]["doc_scores"],
             "line_quality_labels": labels[start_index:end_index],
-            "quality_scores": scores[start_index:end_index]
+            "quality_scores": scores[start_index:end_index],
         }
         assert len(d["text"].split("\n")) == len(d["line_quality_labels"]) == len(d["quality_scores"])
         results.append(d)
@@ -169,7 +175,7 @@ def main(args, tokenizer, model):
             docs = []
             batch_num += 1
             end = time.time()
-            print(f"Processing {args.doc_batch_size} took {end - start:.2f} seconds.", flush=True)
+            print(f"Processing {args.doc_batch_size} docs took {end - start:.2f} seconds.", flush=True)
             start = time.time()
     
     # Process any remaining documents
@@ -202,3 +208,5 @@ if __name__ == "__main__":
     print("Model on device:", model.device, flush=True)
         
     main(args, tokenizer, model)
+    
+    print("Process finished.", flush=True)
