@@ -2,13 +2,13 @@
 #SBATCH --job-name=classifier_inference
 #SBATCH --account=project_462000353
 #SBATCH --partition=small-g
-#SBATCH --time=2-00:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-task=1
 #SBATCH --mem=20G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
-#SBATCH --array=1
+#SBATCH --array=1-5
 
 ####gpu-energy --save
 
@@ -26,7 +26,7 @@ echo "ROCR visible devices: " $ROCR_VISIBLE_DEVICES
 
 LANG_ID="$1"
 BASEDIR="${SLURM_SUBMIT_DIR}"
-DATA_DIR="${BASEDIR}/../data/hplt_dedup/${LANG_ID}"
+DATA_DIR="${BASEDIR}/../data/hplt_dedup/${LANG_ID}/splits"
 OUT_DIR="${BASEDIR}/../data/hplt_dedup_salvaged/${LANG_ID}/full"
 MODEL="${BASEDIR}/../models/line_quality_classifier_${LANG_ID}"
 

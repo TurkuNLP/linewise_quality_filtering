@@ -1,15 +1,16 @@
 #!/bin/bash
 #SBATCH --job-name=data_salvage
 #SBATCH --account=project_462000353
-#SBATCH --partition=dev-g
-#SBATCH --time=00:20:00
+#SBATCH --partition=small
+#SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=15
 #SBATCH --mem=48G
-#SBATCH --gpus-per-node=1
+###SBATCH --gpus-per-node=1
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
+#SBATCH --array=1-5
 
 # Load pytorch module
 module purge
@@ -18,7 +19,55 @@ module load pytorch
 
 source ../.venv/bin/activate
 
-srun python3 ../src/salvage_low_quality_data.py --model-path="../models/line_quality_classifier_fin_Latn" \
-                                                --data-path="../data/hplt_dedup/fin_Latn/1.jsonl.zst" \
-                                                --save-path="../data/hplt_dedup_salvaged/fin_Latn/fin_Latn_dedup_line_quality_labelled.jsonl" \
-                                                --filter
+LANG_ID="eus_Latn"
+
+# Give --model-path and use flag --classify if data is not yet classified.
+# This will run the classifier and then filter data. Else, it will just filter the data.
+# If you want to classify the data, reserve GPU and enough time. Else, use CPU.
+
+# Print the task index.
+echo "My SLURM_ARRAY_TASK_ID: " $SLURM_ARRAY_TASK_ID
+
+LANG_ID="$1"
+BASEDIR="${SLURM_SUBMIT_DIR}"
+DATA_DIR="${BASEDIR}/../data/hplt_dedup_salvaged/${LANG_ID}/full"
+OUT_DIR="${BASEDIR}/../data/hplt_dedup_salvaged/${LANG_ID}/filtered"
+MODEL="${BASEDIR}/../models/line_quality_classifier_${LANG_ID}"
+
+echo "================================"
+echo "Reading data from $DATA_DIR"
+echo "Results will be saved in $OUT_DIR"
+echo "Using model stored at $MODEL"
+echo "================================"
+
+mkdir -p "$OUT_DIR"
+
+# Get the list of both .jsonl and .jsonl.zst files into an array
+mapfile -t FILES < <(find "$DATA_DIR" -maxdepth 1 \( -name '*.jsonl' -o -name '*.jsonl.zst' \) | sort)
+
+# Debug: show files found
+echo "Found ${#FILES[@]} files:"
+for f in "${FILES[@]}"; do
+    echo "  - $f"
+done
+
+# Adjust index for 0-based arrays (SLURM is 1-based, bash arrays are 0-based)
+ARRAY_INDEX=$((SLURM_ARRAY_TASK_ID - 1))
+
+# Verify we have a valid index
+if [ "$ARRAY_INDEX" -lt 0 ] || [ "$ARRAY_INDEX" -ge "${#FILES[@]}" ]; then
+    echo "Error: ARRAY_INDEX ($ARRAY_INDEX) is out of range. Only ${#FILES[@]} files found."
+    exit 1
+fi
+
+# Select files using the array task ID (adjusted for 0-based indexing)
+INPUT_FILE="${FILES[$ARRAY_INDEX]}"
+BASENAME=$(basename "$INPUT_FILE")
+
+echo "Processing file: $INPUT_FILE"
+echo "Saving to: ${OUT_DIR}/${BASENAME}"
+
+python3 ../src/salvage_low_quality_data.py \
+    --data-path "${INPUT_FILE}" \
+    --save-path "${OUT_DIR}/${BASENAME}" \
+    --filter

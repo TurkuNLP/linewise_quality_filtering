@@ -16,9 +16,9 @@ module load pytorch
 
 source ../.venv/bin/activate
 
-LANG_ID="eus_Latn"
+LANG_ID=$1
 
-run_id="${LANG_ID}_classifier_smoothing"
+run_id="${LANG_ID}_classifier"
 
 srun python3 ../src/train_classifier.py --run-id=$run_id \
                                         --data-path="../data/train_dev_test/hplt_${LANG_ID}_linequality" \

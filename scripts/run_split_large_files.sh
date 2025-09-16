@@ -18,9 +18,13 @@ module load pytorch
 # === Activate Python Virtual Environment ===
 source ../.venv/bin/activate
 
+# Give input dir for directory of files you want to split. Can be in .JSONL or .JSONL.ZST format
+# Give split-count for how many files you want to split each file in input-dir
+# Resulting files will be named <original_file_name>_<split_number>.jsonl
+
 LANG_ID="$1"
 
 srun python3 ../src/split_large_files.py \
-    --input-dir "/scratch/project_462000353/data/hplt/all_languages/${LANG_ID}" \
-    --output-dir "${SLURM_SUBMIT_DIR}/../data/hplt/${LANG_ID}" \
-    --split-count 10
+    --input-dir "${SLURM_SUBMIT_DIR}/../data/hplt_dedup/${LANG_ID}" \
+    --output-dir "${SLURM_SUBMIT_DIR}/../data/hplt_dedup/${LANG_ID}/splits" \
+    --split-count 5

@@ -7,7 +7,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
-#SBATCH --array=0-29
+#SBATCH --array=0-99
 #SBATCH -o ../logs/%A_%a.out
 #SBATCH -e ../logs/%A_%a.err
 
@@ -16,9 +16,9 @@ module use /appl/local/csc/modulefiles
 module load pytorch
 
 # --------- CONFIGURATION ---------
-LANG_ID="deu_Latn"
+LANG_ID="eng_Latn"
 DATA_DIR="../data/hplt/line_quality_labelled/${LANG_ID}/full"
-OUT_DIR="../data/hplt/line_quality_labelled/${LANG_ID}/just_clean_trimmed"
+OUT_DIR="../data/hplt/line_quality_labelled/${LANG_ID}/clean+citations_filtered"
 ORIGINAL_FILE_TYPE=".jsonl"
 FILE_PREFIX="$1"
 
@@ -40,7 +40,7 @@ echo "Task $SLURM_ARRAY_TASK_ID processing $input_path -> $output_path"
 
 # --------- PROCESSING ---------
 python3 ../src/filter_by_quality_label.py \
-    --quality-labels="all" \
-    --trim \
+    --quality-labels="errors, legal, interface, toxic, spam, tech" \
+    --filter \
     --data-path="$input_path" \
     --save-path="$output_path"
