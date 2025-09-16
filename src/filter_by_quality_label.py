@@ -6,11 +6,21 @@ import ast
 import os
 
 def load_data(path):
-    dataset = load_dataset(
-        "json",
-        data_files= {"train": path},
-        streaming=True 
-    )
+    if path.is_file():
+        dataset = load_dataset(
+            "json",
+            data_files= {"train": path},
+            streaming=True 
+        )
+    elif path.is_dir():
+        jsonl_files = list(path.glob("*.jsonl"))
+        dataset = load_dataset(
+            "json",
+            data_files= {"train": jsonl_files},
+            streaming=True
+        )
+    else:
+        raise ValueError(f"Path {path} is neither a file nor a directory.")
     
     return dataset["train"]
 
@@ -142,7 +152,7 @@ if __name__ == "__main__":
         "--trim", action="store_true", help="Trim lines that fall below quality threshold from start and end of document" 
     )
     parser.add_argument(
-        "--data-path", type=str, required=True,
+        "--data-path", type=str, required=True, help="Path to input data (JSONL file or directory with JSONL files)"
     )
     parser.add_argument(
         "--save-path", type=str, required=True,
