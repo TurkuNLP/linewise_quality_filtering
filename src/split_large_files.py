@@ -1,81 +1,103 @@
 import os
-import json
-import math
 import io
+import math
 import argparse
 from pathlib import Path
-from typing import List
+from typing import Iterator, List, Tuple
 from multiprocessing import Pool, cpu_count
-import zstandard as zstd
+
+import zstandard as zstd  # type: ignore
 
 
-def count_lines(filepath: Path, is_compressed: bool) -> int:
-    """Count the number of lines in a file."""
-    num_lines = 0
-    read_func = yield_raw_zst if is_compressed else yield_raw_jsonl
-    for _ in read_func(filepath):
-        num_lines += 1
-    return num_lines
+def iter_lines(path: Path) -> Iterator[str]:
+    """Yield non-empty lines from .jsonl or .jsonl.zst as UTF-8 text."""
+    suffixes = path.suffixes
+    if suffixes[-2:] == ['.jsonl', '.zst']:
+        with path.open('rb') as f:
+            dctx = zstd.ZstdDecompressor()
+            with dctx.stream_reader(f) as reader:
+                text_stream = io.TextIOWrapper(reader, encoding='utf-8')
+                for line in text_stream:
+                    line = line.rstrip('\n')
+                    if line.strip():
+                        yield line
+    elif path.suffix == '.jsonl':
+        with path.open('r', encoding='utf-8') as f:
+            for line in f:
+                line = line.rstrip('\n')
+                if line.strip():
+                    yield line
+    else:
+        raise ValueError(f"Unsupported file type: {path.name}")
 
 
-def yield_raw_zst(data_path: Path):
-    with open(data_path, "rb") as f:
-        dctx = zstd.ZstdDecompressor()
-        stream_reader = dctx.stream_reader(f)
-        text_stream = io.TextIOWrapper(stream_reader, encoding='utf-8')
-        for line in text_stream:
-            if line.strip():
-                yield line.strip()
+def count_lines(path: Path) -> int:
+    return sum(1 for _ in iter_lines(path))
 
 
-def yield_raw_jsonl(data_path: Path):
-    with open(data_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                yield line.strip()
-
-
-def write_chunk_to_file(chunk: List[dict], base_name: str, output_dir: Path, split_num: int):
-    part_filename = f"{base_name}_{split_num:03d}.jsonl"
-    part_path = output_dir / part_filename
-    with open(part_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join([line for line in chunk]) + '\n')
+def base_name_for(path: Path) -> str:
+    """Return filename without .jsonl or .jsonl.zst."""
+    if path.suffixes[-2:] == ['.jsonl', '.zst']:
+        return path.name[:-len('.jsonl.zst')]
+    elif path.suffix == '.jsonl':
+        return path.stem
+    else:
+        return path.stem  # fallback
 
 
 def process_jsonl_file(filepath: Path, output_dir: Path, split_count: int):
-    is_compressed = filepath.suffix == '.zst'
-    base_name = filepath.stem if not is_compressed else filepath.stem.split('.')[0]
-
     print(f"Processing {filepath.name}...", flush=True)
 
-    total_lines = count_lines(filepath, is_compressed)
-    if total_lines == 0:
+    total = count_lines(filepath)
+    if total == 0:
         print(f"Skipping empty file: {filepath.name}", flush=True)
         return
 
-    split_size = math.ceil(total_lines / split_count)
-    read_func = yield_raw_zst if is_compressed else yield_raw_jsonl
+    # Compute (nearly) equal target sizes per part, skipping empties if total < split_count
+    q, r = divmod(total, split_count)
+    targets: List[int] = [(q + 1 if i < r else q) for i in range(split_count)]
+    targets = [t for t in targets if t > 0]  # produce up to N non-empty parts
 
-    batch = []
-    lines_in_split = 0
-    split_num = 0
-    for line in read_func(filepath):
-        batch.append(line)
-        lines_in_split += 1
-        if len(batch) >= 1000 or lines_in_split >= split_size:
-            write_chunk_to_file(batch, base_name, output_dir, split_num)
-            batch = []
-            if lines_in_split >= split_size:
-                split_num += 1
-                lines_in_split = 0
+    base = base_name_for(filepath)
+    it = iter_lines(filepath)
 
-    if batch:
-        write_chunk_to_file(batch, base_name, output_dir, split_num)
-        
-    print(f"Finished splitting {filepath.name} into {split_count} parts.", flush=True)
+    part_idx = 0
+    written_in_part = 0
+    current_target = targets[part_idx]
+
+    part_path = output_dir / f"{base}_{part_idx:03d}.jsonl"
+    # ensure we don't accidentally append to an old run
+    if part_path.exists():
+        part_path.unlink()
+    f = part_path.open('w', encoding='utf-8')
+
+    try:
+        for line in it:
+            f.write(line + '\n')
+            written_in_part += 1
+
+            if written_in_part >= current_target:
+                f.close()
+                part_idx += 1
+                if part_idx >= len(targets):
+                    break  # done
+                written_in_part = 0
+                current_target = targets[part_idx]
+                part_path = output_dir / f"{base}_{part_idx:03d}.jsonl"
+                if part_path.exists():
+                    part_path.unlink()
+                f = part_path.open('w', encoding='utf-8')
+        else:
+            # exhausted input but last file still open
+            f.close()
+    finally:
+        if not f.closed:
+            f.close()
+
+    print(f"Finished splitting {filepath.name} into {part_idx + 1} part(s).", flush=True)
 
 
-def process_jsonl_file_mp(args):
+def process_jsonl_file_mp(args: Tuple[Path, Path, int]):
     filepath, output_dir, split_count = args
     process_jsonl_file(filepath, output_dir, split_count)
 
@@ -87,25 +109,25 @@ def split_jsonl_files(input_dir: str, output_dir: str, split_count: int):
 
     jobs = []
     for file in input_path.iterdir():
-        if file.name.endswith('.jsonl') or file.name.endswith('.jsonl.zst'):
+        if file.suffix == '.jsonl' or file.suffixes[-2:] == ['.jsonl', '.zst']:
             jobs.append((file, output_path, split_count))
 
     if not jobs:
         print("No .jsonl or .jsonl.zst files found.")
         return
 
-    print(f"Splitting {len(jobs)} file(s) using {min(cpu_count(), len(jobs))} workers...", flush=True)
+    workers = min(cpu_count(), len(jobs))
+    print(f"Splitting {len(jobs)} file(s) using {workers} worker(s)...", flush=True)
 
-    with Pool(processes=min(cpu_count(), len(jobs))) as pool:
+    with Pool(processes=workers) as pool:
         pool.map(process_jsonl_file_mp, jobs)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Split large JSONL or JSONL.ZST files into smaller parts.")
-    parser.add_argument('--input-dir', required=True, help='Directory containing the input JSONL files.')
-    parser.add_argument('--output-dir', required=True, help='Directory to save the split JSONL files.')
-    parser.add_argument('--split-count', type=int, default=10, help='Number of parts to split each file into.')
-
+    parser = argparse.ArgumentParser(description="Split JSONL/JSONL.ZST files into N parts.")
+    parser.add_argument('--input-dir', required=True, help='Directory containing input files.')
+    parser.add_argument('--output-dir', required=True, help='Directory to save split files.')
+    parser.add_argument('--split-count', type=int, default=10, help='Max number of parts per file.')
     args = parser.parse_args()
 
     split_jsonl_files(args.input_dir, args.output_dir, args.split_count)
