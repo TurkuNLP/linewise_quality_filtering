@@ -5,12 +5,29 @@ from sklearn.model_selection import train_test_split #type:ignore
 from collections import Counter
 import argparse
 import random
+from pathlib import Path
 
 def read_data(path):
+    try:
+        path = Path(path)
+    except Exception:
+        raise ValueError(f"Not a valid data path: {path}")
+    
     data = []
-    with open(path) as f:
-        for line in f.readlines():
-            data.append(json.loads(line))
+    if path.is_file():
+        with path.open("r") as f:
+            for line in f:
+                data.append(json.loads(line))
+    elif path.is_dir():
+        for file in path.rglob("*.jsonl"):
+            with file.open("r") as f:
+                for line in f:
+                    data.append(json.loads(line))
+    else:
+        raise ValueError(f"Path {path} is neither a file nor a directory")
+    
+    assert len(data) != 0
+                        
     return data
 
 
@@ -130,7 +147,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--data-path", type=str, required=True, help="Path to raw data file."
+        "--data-path", type=str, required=True, help="Path to JSONL file or directory of JSONL files."
     )
     parser.add_argument(
         "--save-path", type=str, required=True, help="Path to where the data will be saved."
