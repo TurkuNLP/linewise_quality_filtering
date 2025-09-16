@@ -8,8 +8,9 @@ core
 mlruns/
 models/
 .venv*
-hplt-ablation-setup/
-
+hplt-ablation-setup/*
+lm-evaluation-harness/*
+megatron-workdir-lumi/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
