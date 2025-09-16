@@ -419,6 +419,16 @@ class LineClassifier:
             "Ukrainian": ["ukr_Cyrl"],
             # Closely Associated Scandinavian
             "Norwegian": ["nno_Latn", "nob_Latn"],
+            # Other FineTasks languages
+            # Turkish and French are also FineTasks languages
+            "Simplified Chinese": ["zho_Hans"],
+            "Traditional Chinese": ["zho_Hant"],
+            "Arabic": ["ara_Arab"],
+            "Russian": ["rus_Cyrl"],
+            "Thai": ["tha_Thai"],
+            "Hindi": ["hin_Deva"],
+            "Swahili": ["swh_Latn"],
+            "Telugu": ["tel_Telu"]
         }
         
         for lang, codes in language_dict.items():
