@@ -113,6 +113,7 @@ def main(args):
         api_key = os.environ["COMET_API_KEY"],
         project_name="linewise-quality-filtering"
     )
+    experiment.set_name(str(args.run_id))
     os.environ["COMET_LOG_ASSETS"] = "True"
 
     # Load data
