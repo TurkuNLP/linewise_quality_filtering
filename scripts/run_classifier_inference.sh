@@ -8,7 +8,7 @@
 #SBATCH --mem=20G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
-#SBATCH --array=1-5
+#SBATCH --array=0-4
 
 ####gpu-energy --save
 
@@ -47,8 +47,7 @@ for f in "${FILES[@]}"; do
     echo "  - $f"
 done
 
-# Adjust index for 0-based arrays (SLURM is 1-based, bash arrays are 0-based)
-ARRAY_INDEX=$((SLURM_ARRAY_TASK_ID - 1))
+ARRAY_INDEX=$((SLURM_ARRAY_TASK_ID))
 
 # Verify we have a valid index
 if [ "$ARRAY_INDEX" -lt 0 ] || [ "$ARRAY_INDEX" -ge "${#FILES[@]}" ]; then

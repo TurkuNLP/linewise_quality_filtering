@@ -25,6 +25,6 @@ source ../.venv/bin/activate
 LANG_ID="$1"
 
 srun python3 ../src/split_large_files.py \
-    --input-dir "${SLURM_SUBMIT_DIR}/../data/hplt_dedup/${LANG_ID}" \
+    --input "${SLURM_SUBMIT_DIR}/../data/hplt_dedup/${LANG_ID}" \
     --output-dir "${SLURM_SUBMIT_DIR}/../data/hplt_dedup/${LANG_ID}/splits" \
     --split-count 5
