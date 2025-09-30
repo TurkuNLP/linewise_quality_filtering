@@ -8,6 +8,7 @@ core
 mlruns/
 models/
 .venv*
+*venv*
 hplt-ablation-setup/*
 lm-evaluation-harness/*
 megatron-workdir-lumi/*
