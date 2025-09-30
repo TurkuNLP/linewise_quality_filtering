@@ -102,15 +102,19 @@ def process_jsonl_file_mp(args: Tuple[Path, Path, int]):
     process_jsonl_file(filepath, output_dir, split_count)
 
 
-def split_jsonl_files(input_dir: str, output_dir: str, split_count: int):
-    input_path = Path(input_dir)
+def split_jsonl_files(input: str, output_dir: str, split_count: int):
+    input_path = Path(input)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     jobs = []
-    for file in input_path.iterdir():
+    if input_path.is_dir():
+        for file in input_path.iterdir():
+            if file.suffix == '.jsonl' or file.suffixes[-2:] == ['.jsonl', '.zst']:
+                jobs.append((file, output_path, split_count))
+    elif input_path.is_file():
         if file.suffix == '.jsonl' or file.suffixes[-2:] == ['.jsonl', '.zst']:
-            jobs.append((file, output_path, split_count))
+            jobs.append((input_path, output_path, split_count))
 
     if not jobs:
         print("No .jsonl or .jsonl.zst files found.")
@@ -125,9 +129,9 @@ def split_jsonl_files(input_dir: str, output_dir: str, split_count: int):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Split JSONL/JSONL.ZST files into N parts.")
-    parser.add_argument('--input-dir', required=True, help='Directory containing input files.')
-    parser.add_argument('--output-dir', required=True, help='Directory to save split files.')
+    parser.add_argument('--input', required=True, help='Path to JSONL file of directory containing JSONL files.')
+    parser.add_argument('--output-dir', required=True, help='Directory to save split file(s).')
     parser.add_argument('--split-count', type=int, default=10, help='Max number of parts per file.')
     args = parser.parse_args()
 
-    split_jsonl_files(args.input_dir, args.output_dir, args.split_count)
+    split_jsonl_files(args.input, args.output_dir, args.split_count)
